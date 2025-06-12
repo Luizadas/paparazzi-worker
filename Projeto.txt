@@ -1,0 +1,82 @@
+Documento de Projeto: paparazzi-worker
+Versão: 0.1
+Data: 07 de Junho de 2025
+
+1. Visão Geral do Projeto
+  Conceito: Um sistema automatizado que detecta tendências e notícias no universo dos influenciadores digitais, coleta mídias relacionadas e utiliza uma IA de edição para gerar vídeos curtos e otimizados para o TikTok.
+  Objetivo: Ser a fonte mais rápida e relevante de notícias sobre a cultura da internet, transformando informações brutas em conteúdo de vídeo engajador com o mínimo de intervenção humana.
+  Produto Final: Vídeos de 15 a 60 segundos no formato vertical (9:16), com legendas, trilha sonora viral e edições dinâmicas.
+
+2. O Fluxo de Trabalho (Pipeline de Automação)
+  Este é o coração do projeto. O processo pode ser dividido em 4 módulos principais que rodam em sequência:
+
+Módulo 1: Detecção (O Faro Fino)
+  Entrada: Dados brutos da internet.
+  Saída: Um alerta de "tendência potencial" com um tema e um nível de relevância.
+Módulo 2: Coleta (A Busca por Provas)
+  Entrada: O alerta de tendência.
+  Saída: Arquivos de mídia (vídeos, prints) e seus links de origem.
+Módulo 3: Roteirização (A Criação da Narrativa)
+  Entrada: Arquivos de mídia.
+  Saída: Um "pacote de edição" em formato de dados (JSON), contendo o roteiro, ordem dos clipes, textos e sugestão de estilo.
+Módulo 4: Geração do Vídeo (A Mágica da Edição)
+  Entrada: O pacote de edição.
+  Saída: O arquivo de vídeo final (.mp4).
+
+3. Detalhamento dos Módulos
+Módulo 1: Detecção de Tendências
+  O que precisa fazer: Monitorar diversas fontes para identificar picos anormais de conversas sobre influenciadores.
+  Fontes de Dados:
+  API do Google Trends: Para picos de busca (Ex: "Virginia separou").
+  API do Twitter/X: Para picos de menções e hashtags.
+  Feeds RSS de Portais de Notícias: (Ex: Léo Dias, Hugo Gloss, etc.).
+  Monitoramento de Fóruns: (Ex: Reddit, se aplicável).
+  Lógica de Gatilho (Exemplo):
+  SE a busca por "[influenciador] + [palavra-chave polêmica]" subir +3000% em 2 horas E o número de menções no Twitter/X ultrapassar 10.000/hora ENTÃO gerar Alerta(nível='ALTO', tema='[influenciador] + [palavra-chave]').
+Módulo 2: Coleta de Mídia
+  O que precisa fazer: Com base no alerta, buscar ativamente por "provas" visuais da história.
+  Estratégias de Coleta:
+  Vídeos: Usar uma biblioteca como a yt-dlp para baixar vídeos do TikTok, Instagram, YouTube a partir de links encontrados nos tweets ou notícias.
+  Prints: Usar uma ferramenta de automação de navegador (como Selenium ou Playwright) para visitar o perfil de um influenciador ou uma matéria, tirar um print da tela e salvar a imagem.
+  Priorização: O sistema deve priorizar mídias do próprio influenciador (um storie, um post) em vez de mídias de terceiros.
+Módulo 3: Roteirização
+  O que precisa fazer: Preparar um "pacote" de instruções para a IA de edição. É aqui que a "inteligência editorial" entra.
+
+Processos:
+
+  Análise de Mídia: Se for um vídeo, transcrever o áudio para texto para encontrar a parte mais importante.
+  Seleção de Conteúdo: Identificar o "ouro" – o trecho de 5 segundos mais impactante do vídeo, o tweet mais direto, o comentário mais chocante.
+  Geração do Roteiro (Exemplo de Saída em JSON): Este é o arquivo que o paparazzi-worker enviará para a IA de edição.
+  JSON
+
+{
+  "template_estilo": "noticia_urgente",
+  "titulo_video": "TRETA! Fulano responde Ciclana após indireta!",
+  "arquivos_midia": [
+    { "tipo": "video", "path": "/media/ciclana_storie.mp4", "corte": "00:08-00:13", "legenda": "Tudo começou com esse storie..." },
+    { "tipo": "imagem", "path": "/media/fulano_tweet_print.png", "duracao": 4, "legenda": "A resposta veio rápida no Twitter:" }
+  ],
+  "trilha_sonora_sugerida": "tiktok_song_viral_tensao.mp3",
+  "texto_final": "Acompanhe para mais atualizações!"
+}
+Módulo 4: Geração do Vídeo (Interface com a IA de Edição)
+O que precisa fazer: Enviar o pacote de roteiro para uma IA de edição e receber o vídeo pronto.
+Como "Ensinar" a IA: Você não vai "programar" a IA de edição do zero. Você vai "ensiná-la" através de templates pré-definidos. O paparazzi-worker apenas escolherá qual template usar.
+Exemplos de Templates que você precisa criar ou configurar na outra IA:
+template_noticia_urgente:
+Efeitos: Zoom dramático, transições rápidas (glitch), texto grande com sombra vermelha.
+Cores: Paleta de cores vibrantes e contrastantes.
+Ritmo: Cortes a cada 1-2 segundos.
+template_fofoca_leve:
+Efeitos: Transições suaves, figurinhas e emojis aparecendo na tela.
+Cores: Tons pastéis, mais amigáveis.
+Ritmo: Cortes mais lentos, a cada 3-4 segundos.
+template_analise_treta:
+Layout: Tela dividida (Split Screen) para mostrar os dois lados.
+Efeitos: Linhas que conectam argumentos, caixas de texto para cada pessoa.
+Ritmo: Misto, rápido nas acusações, lento nas "provas".
+4. Próximos Passos (Organizando as Ideias)
+Definir Ferramentas: Pesquisar e listar possíveis IAs de edição que tenham API (Ex: RunwayML, Synthesia ou alguma solução de código aberto). Listar as bibliotecas Python para cada etapa (Google Trends, Tweepy, yt-dlp, Selenium).
+Detalhar a Lógica: Escrever mais regras para o Módulo 1. Quais palavras-chave monitorar para cada influenciador? Qual o limite mínimo para considerar uma tendência?
+Desenhar os Templates: Desenhar no papel ou em um editor simples como seria cada template de vídeo. Que elementos eles teriam?
+Começar Pequeno: Definir o "MVP" (Produto Mínimo Viável). Talvez seja um sistema que só monitora o Twitter para um único influenciador e gera um vídeo simples usando um único template.

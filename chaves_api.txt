@@ -1,0 +1,15 @@
+X/TWITTER
+
+API_KEY = "YIzPyhHVL7NyiasJifz6KQSui"
+
+API_KEY_SECRET = "sT7SnwmoWCVdrS4OaW10JSOC0GGFykhuCVrVG3JVbcDxgFeh4Y"
+ 
+API_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAABKK2QEAAAAAQZeWvqeP1Ji73OoVHh84rf2zhxM%3DX9MzWoEC98p2gk1nUU37pOcUlZifqcJpIRfhJTZigvQoseSdA3"
+
+API_ACCESS_TOKEN = "1869373148669333504-xd68hnLXFaVwtNo3C2II2ew1DDkzvU"
+
+API_ACCESS_TOKEN_SECRET = "WExXuhefJR120mdBsiiHbIsqMerjxd7zzVI34e4ZcUQlI"
+
+
+
+___________________________________________________________________________________________________________________
