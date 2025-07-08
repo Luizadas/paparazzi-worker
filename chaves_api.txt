@@ -13,3 +13,6 @@ API_ACCESS_TOKEN_SECRET = "WExXuhefJR120mdBsiiHbIsqMerjxd7zzVI34e4ZcUQlI"
 
 
 ___________________________________________________________________________________________________________________
+
+API_KEY_YOUTUBE = "AIzaSyDXnyQUQuTrXAIuGsi46mzyYp29RlRto5g"
+

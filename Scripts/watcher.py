@@ -46,18 +46,10 @@ def remover_video_da_lista(db_path, video_id):
 def verificar_performance_videos():
     """Função principal que verifica a performance dos vídeos em observação."""
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando verificação da Watch List...")
-
+    
     videos_para_verificar = obter_videos_para_verificar(DB_FILE)
     if not videos_para_verificar:
         print("Watch List está vazia. Nada a fazer.")
-        return
-
-    # --- DEBUG 1: VER O QUE VEIO DO BANCO DE DADOS ---
-    ids_dos_videos = [video['video_id'] for video in videos_para_verificar]
-    print(f"DEBUG: IDs encontrados no banco de dados: {ids_dos_videos}")
-
-    if not ids_dos_videos:
-        print("Verificação concluída. Nenhum ID para processar.")
         return
 
     try:
@@ -66,45 +58,41 @@ def verificar_performance_videos():
         print(f"ERRO: Não foi possível conectar à API do YouTube. Verifique sua chave. Erro: {e}")
         return
 
-    request = youtube.videos().list(
-        part="snippet,statistics",
-        id=",".join(ids_dos_videos)
-    )
-    response = request.execute()
+    ids_dos_videos = [video['video_id'] for video in videos_para_verificar]
 
-    # --- DEBUG 2: VER A RESPOSTA BRUTA DA API ---
-    print(f"DEBUG: Resposta completa da API: {response}")
+    try:
+        video_details_response = youtube.videos().list(
+            part='statistics', # Só precisamos das estatísticas agora
+            id=",".join(ids_dos_videos)
+        ).execute()
+    except Exception as e:
+        print(f"ERRO: Falha ao buscar detalhes dos vídeos. Erro: {e}")
+        return
 
-    stats_map = {item['id']: item['statistics'] for item in response.get('items', [])}
-
-    # --- DEBUG 3: VER O MAPA DE STATS QUE CRIAMOS ---
-    print(f"DEBUG: Mapa de estatísticas criado: {stats_map}")
+    stats_map = {item['id']: item['statistics'] for item in video_details_response.get('items', [])}
 
     for video in videos_para_verificar:
         video_id = video['video_id']
         added_at_str = video['added_at']
-        # Usando o formato corrigido
         added_at = datetime.strptime(added_at_str, '%Y-%m-%d %H:%M:%S')
 
+        # 1. Verifica se o vídeo expirou
         if datetime.now() - added_at > timedelta(days=MAX_AGE_DAYS):
-            print(f" EXPIRADO: Vídeo {video_id} tem mais de {MAX_AGE_DAYS} dias. Removendo.")
+            print(f"-> EXPIRADO: Vídeo {video_id} removido da lista.")
             remover_video_da_lista(DB_FILE, video_id)
             continue
 
+        # 2. Verifica a contagem de visualizações
         if video_id in stats_map:
             view_count = int(stats_map[video_id].get('viewCount', 0))
-            print(f"  - Verificando '{video_id}': {view_count} visualizações.")
-
+            
             if view_count >= MIN_VIEWS:
-                print(f"✅ APROVADO! Vídeo    {video_id} atingiu {view_count} views.")
+                print(f"✅ APROVADO! Vídeo {video_id} atingiu {view_count} views.")
+                # --- PONTO DE GATILHO PARA O MÓDULO 2 ---
                 print(f"🚨 ALERTA: DOWNLOAD APROVADO! Link: https://www.youtube.com/watch?v={video_id}")
                 remover_video_da_lista(DB_FILE, video_id)
-        else:
-            # --- DEBUG 4: INFORMAR SE UM ID DO NOSSO BANCO NÃO FOI ENCONTRADO NA RESPOSTA DA API ---
-            print(f"AVISO: O video_id '{video_id}' do nosso banco de dados não foi encontrado na resposta da API.")
 
     print("Verificação da Watch List concluída.")
-
 
 # --- PONTO DE ENTRADA DO SCRIPT ---
 if __name__ == "__main__":

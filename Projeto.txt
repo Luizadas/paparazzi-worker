@@ -1,67 +1,155 @@
-Versão: 0.4
-Data: 23 de Junho de 2025
+Documento de Projeto: paparazzi-worker
+Versão: 0.5
+Data: 26 de Junho de 2025
 
-Histórico de Alterações (v0.4):
+Histórico de Alterações (v0.5):
 
-Escopo do MVP (Fase 1): O escopo foi expandido para um "Modelo Híbrido".
-Nova Funcionalidade: Adicionado um "Sistema de Incubação" para vídeos que não contêm influenciadores da "Lista Quente".
-Nova Arquitetura: Introduzido um novo componente (watcher.py). A dependência da API do YouTube e de um banco de dados (SQLite) agora é um requisito para a Fase 1.
+Módulo 1 (Detecção): Arquitetura totalmente revisada. O 
+
+detector.py agora utiliza a API do YouTube em vez de RSS, permitindo uma busca mais profunda e a filtragem de Shorts pela duração do vídeo.
+
+* 
+
+Módulo 2 (Coleta): Adicionada a dependência explícita do FFmpeg para a junção de áudio e vídeo pelo yt-dlp. 
+
+Módulo 3 (Roteirização): Arquitetura de IA detalhada. Adotada uma sub-pipeline (Extração de Áudio -> Transcrição com Whisper -> Análise com LLM). 
+
+Roadmap: A Fase 1 (Infraestrutura e Detecção Híbrida) foi marcada como CONCLUÍDA. O foco atual do projeto foi movido para a Fase 2 (MVP do Módulo 3).
+
 1. Visão Geral do Projeto
-Conceito: Uma "Fábrica de Clipes Virais" automatizada.
-Objetivo: Ser a fonte mais rápida e inteligente de cortes de alta qualidade para nichos específicos, transformando conteúdo longo em dezenas de peças de conteúdo curto com o mínimo de intervenção humana.
-Produto Final: Vídeos de 15 a 90 segundos no formato vertical (9:16), com legendas dinâmicas e otimizados para engajamento.
+
+Conceito: Uma "Fábrica de Clipes Virais" automatizada. 
+
+
+Objetivo: Ser a fonte mais rápida e inteligente de cortes de alta qualidade para nichos específicos, transformando conteúdo longo em dezenas de peças de conteúdo curto com o mínimo de intervenção humana. 
+
+
+Produto Final: Vídeos de 15 a 90 segundos no formato vertical (9:16), com legendas dinâmicas e otimizados para engajamento. 
+
 2. O Fluxo de Trabalho (Pipeline de Automação)
-O processo é dividido em módulos sequenciais, agora com uma lógica de gatilho condicional.
+O processo é dividido em módulos sequenciais, com uma lógica de gatilho condicional. 
 
 Módulo 1: Detecção (O Vigia e Classificador)
-Entrada: Uma lista de canais do YouTube para monitorar.
-Saída: Um alerta de "Download Imediato" ou um "Registro para Observação".
+
+
+Entrada: Uma lista de canais do YouTube para monitorar. 
+
+
+Saída: Um alerta de "Download Imediato" ou um "Registro para Observação". 
+
 Módulo 2: Coleta (O Baixador)
-Entrada: O alerta de vídeo relevante, que pode vir do Módulo 1 ou do watcher.py.
-Saída: O arquivo de vídeo completo (.mp4) salvo localmente.
-Módulo 3: Roteirização (O Garimpeiro de Ouro)
-Entrada: O arquivo de vídeo completo (.mp4).
-Saída: Um "pacote de cortes" em formato JSON com timestamps.
+
+
+Entrada: O alerta de vídeo relevante, que pode vir do Módulo 1 ou do watcher.py. 
+
+
+Saída: O arquivo de vídeo completo (.mp4) salvo localmente. 
+
+Módulo 3: Roteirização (O Garimpeiro de IA)
+
+
+Entrada: O arquivo de vídeo completo (.mp4). 
+
+
+Saída: Um "pacote de cortes" em formato JSON, com timestamps e justificativas geradas por IA. 
+
 Módulo 4: Geração do Vídeo (A Linha de Montagem)
-Entrada: O pacote de cortes (JSON) e o vídeo original (.mp4).
-Saída: Múltiplos arquivos de vídeo finais (.mp4), um para cada corte.
-3. Detalhamento dos Módulos (Revisado para v0.4)
-Módulo 1: detector.py (O Vigia e Classificador)
 
-O que precisa fazer: Monitorar canais via RSS. Ao encontrar um novo vídeo, classifica-o: 
-SE o título contém um nome da influencers.txt , ENTÃO gera um alerta de "Download Imediato" para o Módulo 2.
 
-SE NÃO, salva o link do vídeo e a data em uma base de dados (watch_list.db) para ser analisado posteriormente.
-Fontes de Dados: RSS Feeds dos canais , arquivo influencers.txt.
-Tecnologia Chave: feedparser.
-Novo Componente: watcher.py (O Analista de Performance)
+Entrada: O pacote de cortes (JSON) e o vídeo original (.mp4). 
 
-O que precisa fazer: Rodar periodicamente (ex: a cada 4 horas) para analisar a "lista de observação". Para cada vídeo:
-Verifica se o vídeo tem menos de 3 dias. Se tiver mais, é descartado.
-Usa a API do YouTube para obter a contagem de visualizações.
-SE a contagem for > 200.000, ENTÃO gera um alerta de "Download Aprovado" para o Módulo 2 e remove o vídeo da lista.
-Fontes de Dados: Banco de dados watch_list.db (SQLite), API do YouTube.
-Tecnologia Chave: SQLite, google-api-python-client.
+
+Saída: Múltiplos arquivos de vídeo finais (.mp4), um para cada corte. 
+
+3. Detalhamento dos Módulos (Revisado para v0.5)
+Módulo 1: detector.py (O Vigia com Super Visão)
+
+O que precisa fazer: Monitorar canais via API do YouTube para encontrar o vídeo longo mais recente. Ele busca os últimos vídeos, filtra os "Shorts" analisando a duração de cada um, e então classifica o primeiro vídeo longo encontrado.
+
+
+SE o título contém um nome da influencers.txt, ENTÃO gera um alerta de "Download Imediato". 
+
+
+SE NÃO, salva o ID do vídeo em uma base de dados (watch_list.db) para ser analisado pelo watcher.py. 
+
+
+Fontes de Dados: API do YouTube, arquivo influencers.txt. 
+
+
+Tecnologia Chave: google-api-python-client, isodate. 
+
+Componente: watcher.py (O Analista de Performance)
+
+O que precisa fazer: Rodar periodicamente (ex: a cada 4 horas) para analisar a "lista de observação". Para cada vídeo, verifica se tem menos de 3 dias, usa a API do YouTube para obter as visualizações e, se for maior que 200.000, gera um alerta de "Download Aprovado" para o Módulo 2. 
+
+
+Fontes de Dados: Banco de dados watch_list.db (SQLite), API do YouTube. 
+
+
+Tecnologia Chave: SQLite, google-api-python-client. 
+
 Módulo 2: coletor.py (O Baixador)
 
-O que precisa fazer: Usar o link do alerta para baixar o vídeo completo. Agora é acionado tanto pelo detector.py quanto pelo watcher.py.
 
-Tecnologia Chave: yt-dlp.
-Módulos 3 e 4 (Sem alterações no escopo do MVP)
+O que precisa fazer: Usar o link do alerta para baixar o vídeo completo. É acionado tanto pelo 
 
-Módulo 3 (Roteirização): Analisará o vídeo para encontrar os melhores segmentos. Estratégias futuras incluem transcrição com Whisper.
-Módulo 4 (Geração): Cortará o vídeo original nos timestamps definidos usando FFmpeg.
+detector.py quanto pelo watcher.py. 
+
+
+Tecnologia Chave: yt-dlp e sua dependência FFmpeg. 
+
+Módulo 3: roteirizador.py (O Garimpeiro de IA)
+
+O que precisa fazer: Analisar um vídeo longo e, usando uma cadeia de ferramentas de IA, identificar e extrair os metadados dos segmentos com maior potencial viral.
+
+Extração de Áudio: Usa FFmpeg para extrair o áudio do .mp4.
+
+
+Transcrição: Usa um modelo Whisper local para transcrever o áudio, gerando um texto com timestamps. 
+
+Análise com LLM: Envia a transcrição para um LLM local (ex: DeepSeek V3) via API para que a IA identifique os melhores momentos e retorne os timestamps.
+
+
+Tecnologia Chave: FFmpeg, Whisper, requests (para API do LLM). 
+
+Módulo 4: gerador.py (A Linha de Montagem)
+
+
+O que precisa fazer: Cortará o vídeo original nos timestamps definidos pelo Módulo 3. 
+
+
+Tecnologia Chave: FFmpeg. 
+
 4. Próximos Passos (Roadmap de Desenvolvimento)
-Fase 1: MVP - Fábrica de Clipes Híbrida (Foco Atual)
+Fase 1: MVP - Fábrica de Clipes Híbrida (CONCLUÍDA)
 
-Objetivo: Construir e validar o fluxo completo com o "Sistema de Incubação" inteligente, garantindo que tanto os hits óbvios quanto os orgânicos sejam capturados.
+
+Status: O fluxo completo de Detecção , Incubação e Coleta  foi construído, depurado e validado. A infraestrutura de base está operacional.
+
+
+
+Fase 2: O Cérebro da Operação - MVP do Módulo 3 (Foco Atual)
+
+Objetivo: Construir e validar a pipeline de roteirização, provando que conseguimos transformar um arquivo de vídeo em uma lista de clipes sugeridos pela IA.
+
 Passos:
-Configuração de Ambiente: Obter credenciais e configurar o acesso para a API do YouTube.
-Estrutura de Dados: Criar o arquivo influencers.txt  e definir o esquema do banco de dados watch_list.db (SQLite).
-Desenvolvimento do detector.py: Implementar a lógica de classificação (Download Imediato vs. Registrar para Observação).
-Desenvolvimento do watcher.py: Implementar a lógica de análise de performance (verificar idade do vídeo, chamar API, verificar views).
-Integração: Garantir que tanto o detector.py quanto o watcher.py possam acionar o coletor.py  para baixar os vídeos corretamente.
-Fase 2: Sistema Adaptativo (Visão Futura)
 
-Objetivo: Evoluir o sistema para que ele aprenda e se adapte às novas tendências.
-Ideia Central (Backlog): Desenvolver um Módulo 5: Radar de Talentos. Este módulo analisará canais-hub de forma proativa para identificar novos influenciadores em ascensão e adicioná-los automaticamente ao arquivo influencers.txt.
+Configuração de Ambiente (IA): Instalar as bibliotecas necessárias para a execução local do Whisper.
+
+Desenvolvimento do roteirizador.py para executar a extração de áudio e a transcrição.
+
+Integração com a API do LLM local, incluindo a criação de um prompt eficaz.
+
+Teste de Ponta a Ponta do Módulo 3.
+
+Fase 3: Automação Completa e Visão Futura (Backlog)
+
+
+Objetivo: Finalizar a automação e tornar o sistema autossuficiente. 
+
+Passos:
+
+Integração do Módulo 4: Construir o gerador.py.
+
+
+Desenvolver Módulo 5 ("Radar de Talentos"): Implementar o sistema adaptativo que descobre novos influenciadores para monitorar. 
