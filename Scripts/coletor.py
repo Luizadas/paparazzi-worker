@@ -15,7 +15,7 @@ def baixar_video(url):
     # Estamos especificando para baixar o melhor formato de vídeo MP4 disponível
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': f'downloads/%(title)s - %(id)s_{timestamp}.%(ext)s', # Salva em uma pasta 'downloads'
+        'outtmpl': f'/mnt/paparazzi/%(title)s - %(id)s_{timestamp}.%(ext)s', # Salva em uma pasta
         'noplaylist': True, # Garante que não baixe a playlist inteira se o link for de uma
     }
 
