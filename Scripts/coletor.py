@@ -1,6 +1,7 @@
 # coletor.py - O Baixador do Paparazzi-Worker
 
 import sys
+import os
 import yt_dlp
 from datetime import datetime
 
@@ -11,11 +12,15 @@ def baixar_video(url):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     print(f"[{timestamp}] 📥 Iniciando download de: {url}")
 
+    # Diretório padrão para salvar os vídeos especificado pelo usuário
+    DOWNLOAD_DIR = "/mnt/paparazzi"
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    
     # Opções de download para o yt-dlp
     # Estamos especificando para baixar o melhor formato de vídeo MP4 disponível
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': f'/mnt/paparazzi/%(title)s - %(id)s_{timestamp}.%(ext)s', # Salva em uma pasta
+        'outtmpl': os.path.join(DOWNLOAD_DIR, f'%(title)s - %(id)s_{timestamp}.%(ext)s'), # Salva em uma pasta multi-plataforma
         'noplaylist': True, # Garante que não baixe a playlist inteira se o link for de uma
     }
 

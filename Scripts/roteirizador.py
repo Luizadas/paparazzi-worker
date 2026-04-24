@@ -105,11 +105,22 @@ if __name__ == '__main__':
     # URL da sua API do LLM local. Se usa Ollama, provavelmente é esta.
     LLM_API_URL = "http://localhost:11434/api/generate"
     
-    arquivo_de_teste = "/mnt/paparazzi/RICHARD RASMUSSEN FINALMENTE REALIZOU A SUA OPERAÇÃO ! - 9pvLdumWiCs_20250717_175031.mp4"
-
-    if not os.path.exists(arquivo_de_teste):
-        print(f"AVISO: Arquivo '{arquivo_de_teste}' não encontrado.")
+    DOWNLOAD_DIR = "/mnt/paparazzi"
+    
+    print(f"[*] Buscando vídeos na pasta: {DOWNLOAD_DIR}")
+    arquivo_de_teste = None
+    
+    if os.path.exists(DOWNLOAD_DIR):
+        for file in os.listdir(DOWNLOAD_DIR):
+            if file.endswith(".mp4"):
+                arquivo_de_teste = os.path.join(DOWNLOAD_DIR, file)
+                break
+                
+    if not arquivo_de_teste:
+        print(f"AVISO: Nenhum arquivo de vídeo (.mp4) encontrado na pasta '{DOWNLOAD_DIR}'.")
+        print("Dica: Use o coletor.py para baixar um vídeo primeiro!")
     else:
+        print(f"[*] Vídeo selecionado para teste: {arquivo_de_teste}")
         try:
             # Etapa 1: Transcrição
             transcricao_completa = transcrever_video_localmente(arquivo_de_teste, modelo_whisper="base")
