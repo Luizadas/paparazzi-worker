@@ -1,0 +1,30 @@
+# Credenciais e arquivos sensíveis — NUNCA commitar
+.env
+*.env
+chaves_api.txt
+
+# Banco de dados local
+*.db
+
+# Arquivos de vídeo (pesados demais para o repositório)
+*.mp4
+*.wav
+*.mkv
+*.avi
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDEs
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Fila de postagem (dados de runtime)
+Scripts/mirror-clips/fila_postagem.json
+Scripts/mirror-clips/selenium_debug.png
