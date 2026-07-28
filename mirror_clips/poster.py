@@ -311,18 +311,40 @@ class TikTokSeleniumPoster:
             log("❌ Selenium: TIKTOK_SESSION_ID não configurado no .env")
             raise ValueError("Session ID não configurado")
 
-        log("🍪 Selenium: Injetando cookie de sessão...")
-        self.driver.get("https://www.tiktok.com")
-        time.sleep(3)
+        log("🍪 Selenium: Injetando cookie de sessão (via CDP)...")
 
-        self.driver.add_cookie({
-            "name": "sessionid",
-            "value": self.session_id,
-            "domain": ".tiktok.com",
-            "path": "/",
-            "secure": True,
-        })
+        # Abre um contexto tiktok.com (necessário para o CDP setar no domínio certo)
+        self.driver.get("https://www.tiktok.com")
+        time.sleep(2)
+
+        # Injeta o cookie via Chrome DevTools Protocol. Ao contrário de add_cookie,
+        # o Network.setCookie atua na camada de rede e aceita domínio com ponto
+        # inicial sem exigir estar exatamente na página — elimina o erro
+        # intermitente "invalid cookie domain" no headless.
+        try:
+            self.driver.execute_cdp_cmd("Network.enable", {})
+            self.driver.execute_cdp_cmd("Network.setCookie", {
+                "name": "sessionid",
+                "value": self.session_id,
+                "domain": ".tiktok.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+            })
+        except Exception as e:
+            # Fallback: método clássico do Selenium
+            log(f"   (CDP falhou: {e} — tentando add_cookie clássico)")
+            self.driver.add_cookie({
+                "name": "sessionid",
+                "value": self.session_id,
+                "path": "/",
+                "secure": True,
+            })
         log("✅ Selenium: Cookie injetado.")
+
+        # Recarrega já autenticado para confirmar o login
+        self.driver.get("https://www.tiktok.com")
+        time.sleep(2)
 
     def _definir_privacidade(self, wait) -> bool:
         """
@@ -332,12 +354,13 @@ class TikTokSeleniumPoster:
         tenta textos em inglês e português.
         """
         from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
 
         textos_por_nivel = {
             "PUBLIC_TO_EVERYONE": ["Everyone", "Todos"],
             "MUTUAL_FOLLOW_FRIENDS": ["Friends", "Amigos"],
             "FOLLOWER_OF_CREATOR": ["Followers", "Seguidores"],
-            "SELF_ONLY": ["Only you", "Somente você", "Private", "Privado"],
+            "SELF_ONLY": ["Only you", "Only me", "Somente você", "Private", "Privado"],
         }
         alvos = textos_por_nivel.get(PRIVACY_LEVEL)
         if not alvos:
@@ -346,31 +369,73 @@ class TikTokSeleniumPoster:
         log(f"🔒 Selenium: Ajustando visibilidade para '{PRIVACY_LEVEL}'...")
         time.sleep(2)
 
-        # 1. Abre o seletor "Quem pode assistir a este vídeo"
-        for label in ["Who can watch this video", "Quem pode assistir",
-                      "Who can view this video", "Visibility", "Visibilidade"]:
+        # 0. Fecha popups/modais que possam sobrepor e bloquear cliques
+        try:
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        # 1. Abre o dropdown "Who can see this post" clicando na CAIXA de valor
+        #    atual (ex: "Everyone"), ancorada logo após o rótulo.
+        labels = ["Who can see this post", "Who can view this post",
+                  "Who can watch this video", "Quem pode ver esta publicação",
+                  "Quem pode ver este post"]
+        valores_atuais = ["Everyone", "Friends", "Followers", "Only you", "Only me",
+                          "Todos", "Amigos", "Seguidores", "Somente você"]
+        aberto = False
+        for label in labels:
             try:
-                el = self.driver.find_element(By.XPATH, f"//*[contains(text(), '{label}')]")
-                el.click()
-                time.sleep(1)
+                lbl = self.driver.find_element(
+                    By.XPATH, f"//*[contains(normalize-space(text()), '{label}')]"
+                )
+                self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", lbl)
+                time.sleep(0.5)
+                # a caixa de valor atual = primeiro elemento após o rótulo cujo
+                # texto é um dos valores possíveis do dropdown
+                cond = " or ".join([f"normalize-space(text())='{v}'" for v in valores_atuais])
+                caixa = lbl.find_element(By.XPATH, f"following::*[{cond}][1]")
+                try:
+                    caixa.click()               # clique nativo abre o dropdown
+                except Exception:
+                    self.driver.execute_script("arguments[0].click();", caixa)
+                aberto = True
+                time.sleep(1.5)
                 break
             except Exception:
                 continue
 
-        # 2. Seleciona a opção desejada
+        if not aberto:
+            log("⚠️  Selenium: não localizei o dropdown de visibilidade.")
+            return False
+
+        # Debug: salva o estado com o dropdown (esperado) aberto
+        try:
+            self.driver.save_screenshot(str(Path(__file__).parent / "debug_privacy_open.png"))
+        except Exception:
+            pass
+
+        # 2. Seleciona a opção desejada. Após abrir, há DUAS ocorrências do texto
+        #    (a caixa + a opção na lista) — pegamos a ÚLTIMA (a opção da lista).
         for texto in alvos:
             try:
-                opcao = self.driver.find_element(
+                opcoes = self.driver.find_elements(
                     By.XPATH, f"//*[normalize-space(text())='{texto}']"
                 )
-                opcao.click()
+                if not opcoes:
+                    continue
+                alvo = opcoes[-1]
+                try:
+                    alvo.click()
+                except Exception:
+                    self.driver.execute_script("arguments[0].click();", alvo)
                 log(f"✅ Selenium: Visibilidade definida como '{texto}'.")
                 time.sleep(1)
                 return True
             except Exception:
                 continue
 
-        log(f"⚠️  Selenium: NÃO foi possível ajustar a visibilidade para '{PRIVACY_LEVEL}'.")
+        log(f"⚠️  Selenium: NÃO foi possível selecionar a opção para '{PRIVACY_LEVEL}'.")
         return False
 
     def _fazer_upload(self, video_path: str, caption: str):
@@ -421,17 +486,74 @@ class TikTokSeleniumPoster:
             self.driver.save_screenshot(str(Path(__file__).parent / "selenium_debug.png"))
             return False
 
-        # Aguarda um pouco e clica em Publicar
-        time.sleep(5)
+        # Localiza e clica no botão de publicar. O botão fica no rodapé (fora da
+        # tela) e só habilita quando o upload/processamento termina.
+        time.sleep(3)
+
+        def _achar_botao_post():
+            # 1) seletor específico do TikTok Studio
+            for sel in ["button[data-e2e='post_video_button']",
+                        "[data-e2e='post_video_button']"]:
+                els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                if els:
+                    return els[0]
+            # 2) fallback por texto (evita 'Upload' pra não pegar outros botões)
+            for xp in ["//button[normalize-space()='Post']",
+                       "//button[normalize-space()='Publicar']",
+                       "//button[.//div[normalize-space()='Post']]",
+                       "//button[contains(., 'Post') or contains(., 'Publicar')]"]:
+                els = self.driver.find_elements(By.XPATH, xp)
+                if els:
+                    return els[0]
+            return None
+
         try:
-            btn_publicar = wait.until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//button[contains(., 'Post') or contains(., 'Publicar') or contains(., 'Upload')]")
-                )
-            )
-            btn_publicar.click()
+            # Espera o botão aparecer E ficar habilitado (upload concluído),
+            # até ~90s (processamento do vídeo pode demorar).
+            btn = None
+            for _ in range(45):
+                btn = _achar_botao_post()
+                if btn and btn.is_enabled() and btn.get_attribute("aria-disabled") != "true":
+                    break
+                time.sleep(2)
+
+            if not btn:
+                raise RuntimeError("Botão de publicar não encontrado.")
+
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+            time.sleep(1)
+            try:
+                btn.click()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", btn)
             log("✅ Selenium: Botão de publicar clicado!")
+
+            # O TikTok pode abrir um modal "Continue to post?" quando as checagens
+            # (copyright / content check) ainda estão rodando. Confirmamos com "Post now".
+            time.sleep(2)
+            for xp in ["//button[normalize-space()='Post now']",
+                       "//button[contains(., 'Post now')]",
+                       "//button[normalize-space()='Publicar agora']",
+                       "//button[contains(., 'Publicar agora')]"]:
+                modais = self.driver.find_elements(By.XPATH, xp)
+                if modais:
+                    try:
+                        modais[0].click()
+                    except Exception:
+                        self.driver.execute_script("arguments[0].click();", modais[0])
+                    log("✅ Selenium: Confirmado 'Post now' (checagem ainda em andamento).")
+                    break
+
+            # Confirma a publicação: TikTok mostra um modal de sucesso / redireciona
             time.sleep(8)
+            sucesso_txt = ["Your video has been", "was posted", "foi publicad",
+                           "Manage your posts", "posted to"]
+            page = self.driver.page_source.lower()
+            if any(t.lower() in page for t in sucesso_txt) or "content" in (self.driver.current_url or ""):
+                log("🎉 Selenium: Publicação confirmada!")
+            else:
+                log("ℹ️  Selenium: Botão clicado; confirmação não detectada explicitamente (verifique a conta).")
+            self.driver.save_screenshot(str(Path(__file__).parent / "post_result.png"))
             return True
         except Exception as e:
             log(f"❌ Selenium: Não foi possível clicar em Publicar: {e}")

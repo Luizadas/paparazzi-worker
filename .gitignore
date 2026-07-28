@@ -28,7 +28,7 @@ __pycache__/
 
 # Fila de postagem e artefatos de runtime do mirror-clips
 mirror_clips/fila_postagem.json
-mirror_clips/selenium_debug.png
+mirror_clips/*.png
 
 # Clipes gerados pelo sistema principal
 cortes_gerados/
