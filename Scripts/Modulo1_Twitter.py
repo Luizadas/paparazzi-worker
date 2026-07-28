@@ -1,13 +1,17 @@
 # --- paparazzi-worker: Módulo 1 (Detecção) ---
 # Versão 0.8: Monitor Paciente (Anti-Burst-Limit)
 
+import os
 import tweepy
 import time
 from datetime import datetime, timezone
 import math
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
 
 # --- 1. CONFIGURAÇÃO ---
-BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAABKK2QEAAAAAQZeWvqeP1Ji73OoVHh84rf2zhxM%3DX9MzWoEC98p2gk1nUU37pOcUlZifqcJpIRfhJTZigvQoseSdA3"
+BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
 
 LISTA_DE_ALVOS = ["whindersson", "felipeneto", "Virginia", "g1"]
 LISTA_DE_PALAVRAS_CHAVE = [

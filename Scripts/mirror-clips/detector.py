@@ -6,12 +6,15 @@ import sqlite3
 from datetime import datetime
 from googleapiclient.discovery import build
 import isodate
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
 
 # --- CONFIGURAÇÕES ---
 CHANNEL_ID = 'UCPX0gLduKAfgr-HJENa7CFw' # Canal alvo (pode ser ajustado ou alterado para busca global)
 
-# Chave da API do YouTube (substitua pela sua)
-API_KEY = 'AIzaSyDXnyQUQuTrXAIuGsi46mzyYp29RlRto5g'
+# Chave da API do YouTube (lida do .env na raiz do projeto)
+API_KEY = os.getenv('YOUTUBE_API_KEY', '')
 
 # Banco de dados específico para o mirror-clips
 DB_FILE = 'mirror_memory.db'

@@ -18,10 +18,10 @@ import requests
 import traceback
 from datetime import datetime
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
-# Carrega as variáveis do .env no mesmo diretório do script
-load_dotenv(dotenv_path=Path(__file__).parent / ".env")
+# Carrega as variáveis do .env único na raiz do projeto
+load_dotenv(find_dotenv())
 
 # ─────────────────────────────────────────────
 #  CONFIGURAÇÕES (via .env)
@@ -34,6 +34,7 @@ DISABLE_COMMENT      = os.getenv("TIKTOK_DISABLE_COMMENT", "false").lower() == "
 DISABLE_DUET         = os.getenv("TIKTOK_DISABLE_DUET", "false").lower() == "true"
 DISABLE_STITCH       = os.getenv("TIKTOK_DISABLE_STITCH", "false").lower() == "true"
 SESSION_ID           = os.getenv("TIKTOK_SESSION_ID", "")
+HEADLESS             = os.getenv("TIKTOK_HEADLESS", "true").lower() == "true"
 CHROME_BINARY        = os.getenv("CHROME_BINARY_PATH", "")
 MIRROR_OUTPUT_DIR    = os.getenv("MIRROR_OUTPUT_DIR", "/mnt/paparazzi/mirror_clips")
 DEFAULT_CAPTION      = os.getenv("DEFAULT_CAPTION", "🔥 {titulo} #viral #shorts #trending #fyp")
@@ -276,6 +277,9 @@ class TikTokSeleniumPoster:
             from webdriver_manager.chrome import ChromeDriverManager
 
             opts = Options()
+            if HEADLESS:
+                opts.add_argument("--headless=new")
+                log("🖥️  Selenium: modo headless ativado (sem janela).")
             opts.add_argument("--no-sandbox")
             opts.add_argument("--disable-dev-shm-usage")
             opts.add_argument("--disable-blink-features=AutomationControlled")

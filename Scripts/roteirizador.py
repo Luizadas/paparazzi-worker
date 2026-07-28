@@ -6,6 +6,9 @@ import os
 import json
 import requests
 from datetime import timedelta
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
 
 # --- A função que já tínhamos, sem alterações ---
 def transcrever_video_localmente(caminho_video: str, modelo_whisper: str = "base") -> dict:
@@ -102,8 +105,8 @@ def analisar_transcricao_com_llm(transcricao_result: dict, llm_api_url: str) -> 
 
 # --- Bloco de teste ATUALIZADO ---
 if __name__ == '__main__':
-    # URL da sua API do LLM local. Se usa Ollama, provavelmente é esta.
-    LLM_API_URL = "http://localhost:11434/api/generate"
+    # URL da sua API do LLM local (lida do .env; padrão Ollama local).
+    LLM_API_URL = os.getenv("LLM_API_URL", "http://localhost:11434/api/generate")
     
     DOWNLOAD_DIR = "/mnt/paparazzi"
     

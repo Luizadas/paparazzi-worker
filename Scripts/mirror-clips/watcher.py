@@ -7,10 +7,13 @@ from datetime import datetime, timedelta, timezone
 import os
 import isodate
 import subprocess
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
 
 # --- CONFIGURAÇÕES ---
 DB_FILE = 'mirror_memory.db'
-API_KEY = 'AIzaSyDXnyQUQuTrXAIuGsi46mzyYp29RlRto5g' # Substitua pela sua chave
+API_KEY = os.getenv('YOUTUBE_API_KEY', '') # Lida do .env na raiz do projeto
 MIN_VIEWS = 100000  # Meta para Shorts virais
 MAX_AGE_DAYS = 7    # Dá mais tempo para o Short viralizar
 

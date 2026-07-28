@@ -1,6 +1,7 @@
-# Credenciais e arquivos sensíveis — NUNCA commitar
-.env
-*.env
+# Credenciais: repo fechado — .env versionado por escolha do projeto.
+# (Se o repo virar público um dia, reative as duas linhas abaixo!)
+# .env
+# *.env
 chaves_api.txt
 
 # Banco de dados local

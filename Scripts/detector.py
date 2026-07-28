@@ -7,12 +7,15 @@ import sqlite3
 from datetime import datetime
 from googleapiclient.discovery import build
 import isodate
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv())
 
 # --- CONFIGURAÇÕES ---
 CHANNEL_ID = 'UCPX0gLduKAfgr-HJENa7CFw' # Verifique se este é o ID do canal desejado
 
-# Chave da API do YouTube (substitua pela sua)
-API_KEY = 'AIzaSyDXnyQUQuTrXAIuGsi46mzyYp29RlRto5g'
+# Chave da API do YouTube (lida do .env na raiz do projeto)
+API_KEY = os.getenv('YOUTUBE_API_KEY', '')
 
 # Nomes dos arquivos de suporte
 DB_FILE = 'paparazzi_memory.db'
