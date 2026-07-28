@@ -5,16 +5,20 @@ import sqlite3
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta, timezone
 import os
+from pathlib import Path
 import isodate
 import subprocess
 from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
 
+# Raiz do projeto (uma pasta acima de mirror_clips/)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 # --- CONFIGURAÇÕES ---
-DB_FILE = 'mirror_memory.db'
+DB_FILE = str(PROJECT_ROOT / 'data' / 'mirror_memory.db')
 API_KEY = os.getenv('YOUTUBE_API_KEY', '') # Lida do .env na raiz do projeto
-MIN_VIEWS = 100000  # Meta para Shorts virais
+MIN_VIEWS = 30000   # Meta para Shorts virais
 MAX_AGE_DAYS = 7    # Dá mais tempo para o Short viralizar
 
 def obter_shorts_para_verificar(db_path):
@@ -83,10 +87,16 @@ def verificar_performance_shorts():
                 print(f"📥 Disparando download e processamento para: {link}")
                 remover_short_da_lista(DB_FILE, video_id)
                 
-                # Chamando o coletor para iniciar o processo
+                # Chama o coletor e AGUARDA terminar (download + processamento + enfileira).
+                # Bloqueante de propósito: assim, quando o watcher termina, a fila de
+                # postagem já está pronta para o poster.py --queue.
                 try:
-                    import sys
-                    subprocess.Popen([sys.executable, 'coletor.py', link])
+                    import sys, os
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    subprocess.run(
+                        [sys.executable, 'coletor.py', link],
+                        cwd=script_dir, check=False
+                    )
                 except Exception as e:
                     print(f"Erro ao disparar coletor.py: {e}")
 

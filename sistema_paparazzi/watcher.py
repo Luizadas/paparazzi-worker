@@ -5,13 +5,17 @@ import sqlite3
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta, timezone
 import os
+from pathlib import Path
 import isodate
 from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
 
+# Raiz do projeto (uma pasta acima de sistema_paparazzi/)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 # --- CONFIGURAÇÕES ---
-DB_FILE = 'paparazzi_memory.db'
+DB_FILE = str(PROJECT_ROOT / 'data' / 'paparazzi_memory.db')
 API_KEY = os.getenv('YOUTUBE_API_KEY', '') # Lida do .env na raiz do projeto
 MIN_VIEWS = 200000
 MAX_AGE_DAYS = 3

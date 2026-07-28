@@ -26,6 +26,12 @@ __pycache__/
 # Logs
 *.log
 
-# Fila de postagem (dados de runtime)
-Scripts/mirror-clips/fila_postagem.json
-Scripts/mirror-clips/selenium_debug.png
+# Fila de postagem e artefatos de runtime do mirror-clips
+mirror_clips/fila_postagem.json
+mirror_clips/selenium_debug.png
+
+# Clipes gerados pelo sistema principal
+cortes_gerados/
+
+# Screenshots de scraping experimental
+comum/experimentais/*.png

@@ -324,6 +324,55 @@ class TikTokSeleniumPoster:
         })
         log("✅ Selenium: Cookie injetado.")
 
+    def _definir_privacidade(self, wait) -> bool:
+        """
+        Ajusta a visibilidade do post conforme PRIVACY_LEVEL antes de publicar.
+        Retorna True se aplicou (ou se não havia nada a fazer), False se falhou.
+        A UI do TikTok Studio muda com frequência — por isso é best-effort e
+        tenta textos em inglês e português.
+        """
+        from selenium.webdriver.common.by import By
+
+        textos_por_nivel = {
+            "PUBLIC_TO_EVERYONE": ["Everyone", "Todos"],
+            "MUTUAL_FOLLOW_FRIENDS": ["Friends", "Amigos"],
+            "FOLLOWER_OF_CREATOR": ["Followers", "Seguidores"],
+            "SELF_ONLY": ["Only you", "Somente você", "Private", "Privado"],
+        }
+        alvos = textos_por_nivel.get(PRIVACY_LEVEL)
+        if not alvos:
+            return True  # nível desconhecido: deixa o padrão da conta
+
+        log(f"🔒 Selenium: Ajustando visibilidade para '{PRIVACY_LEVEL}'...")
+        time.sleep(2)
+
+        # 1. Abre o seletor "Quem pode assistir a este vídeo"
+        for label in ["Who can watch this video", "Quem pode assistir",
+                      "Who can view this video", "Visibility", "Visibilidade"]:
+            try:
+                el = self.driver.find_element(By.XPATH, f"//*[contains(text(), '{label}')]")
+                el.click()
+                time.sleep(1)
+                break
+            except Exception:
+                continue
+
+        # 2. Seleciona a opção desejada
+        for texto in alvos:
+            try:
+                opcao = self.driver.find_element(
+                    By.XPATH, f"//*[normalize-space(text())='{texto}']"
+                )
+                opcao.click()
+                log(f"✅ Selenium: Visibilidade definida como '{texto}'.")
+                time.sleep(1)
+                return True
+            except Exception:
+                continue
+
+        log(f"⚠️  Selenium: NÃO foi possível ajustar a visibilidade para '{PRIVACY_LEVEL}'.")
+        return False
+
     def _fazer_upload(self, video_path: str, caption: str):
         """Navega até a página de upload e faz o envio do vídeo."""
         from selenium.webdriver.common.by import By
@@ -364,6 +413,13 @@ class TikTokSeleniumPoster:
             log(f"✅ Selenium: Legenda preenchida.")
         except Exception:
             log("⚠️  Selenium: Não foi possível preencher a legenda automaticamente.")
+
+        # Ajusta a visibilidade do post (público/amigos/privado) antes de publicar
+        privacidade_ok = self._definir_privacidade(wait)
+        if PRIVACY_LEVEL == "SELF_ONLY" and not privacidade_ok:
+            log("🛑 Selenium: Abortando — não foi possível garantir visibilidade PRIVADA.")
+            self.driver.save_screenshot(str(Path(__file__).parent / "selenium_debug.png"))
+            return False
 
         # Aguarda um pouco e clica em Publicar
         time.sleep(5)

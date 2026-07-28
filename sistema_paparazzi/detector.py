@@ -1,8 +1,10 @@
-# paparazzi-worker: detector.py (Mirror-Clips Module)
-# Foco: Encontrar Shorts (<= 70s) e monitorar.
+# paparazzi-worker: detector.py
+# Versão: 3.1 (com Data de Lançamento)
+# Data: 17 de Julho de 2025
 
 import os
 import sqlite3
+from pathlib import Path
 from datetime import datetime
 from googleapiclient.discovery import build
 import isodate
@@ -10,16 +12,29 @@ from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
 
+# Raiz do projeto (uma pasta acima de sistema_paparazzi/)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+(PROJECT_ROOT / 'data').mkdir(exist_ok=True)
+
 # --- CONFIGURAÇÕES ---
-CHANNEL_ID = 'UCPX0gLduKAfgr-HJENa7CFw' # Canal alvo (pode ser ajustado ou alterado para busca global)
+CHANNEL_ID = 'UCPX0gLduKAfgr-HJENa7CFw' # Verifique se este é o ID do canal desejado
 
 # Chave da API do YouTube (lida do .env na raiz do projeto)
 API_KEY = os.getenv('YOUTUBE_API_KEY', '')
 
-# Banco de dados específico para o mirror-clips
-DB_FILE = 'mirror_memory.db'
+# Arquivos de suporte (caminhos absolutos, independentes de onde o script é chamado)
+DB_FILE = str(PROJECT_ROOT / 'data' / 'paparazzi_memory.db')
+INFLUENCERS_FILE = str(PROJECT_ROOT / 'comum' / 'influenciadores' / 'influenciadores_midia.txt')
 
 # --- Funções Auxiliares ---
+
+def carregar_influencers(filepath):
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return [line.strip().lower() for line in f if line.strip()]
+    except FileNotFoundError:
+        print(f"AVISO: Arquivo de influencers '{filepath}' não encontrado.")
+        return []
 
 def configurar_banco(db_path):
     conn = sqlite3.connect(db_path)
@@ -50,9 +65,9 @@ def salvar_para_observacao(db_path, video_id, video_title, published_at):
         cursor.execute("INSERT INTO watch_list (video_id, video_title, published_at) VALUES (?, ?, ?)", 
                        (video_id, video_title, published_at))
         conn.commit()
-        print(f"✅ SHORT REGISTRADO PARA OBSERVAÇÃO: '{video_title}'")
+        print(f"✅ VÍDEO REGISTRADO PARA OBSERVAÇÃO: '{video_title}'")
     except sqlite3.IntegrityError:
-        print(f"ℹ️  Short '{video_title}' já estava na lista de observação.")
+        print(f"ℹ️  Vídeo '{video_title}' já estava na lista de observação.")
     finally:
         conn.close()
 
@@ -75,10 +90,10 @@ def marcar_como_processado(db_path, video_id, published_at):
 # --- Lógica Principal ---
 
 def verificar_canal_com_api(channel_id):
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando verificação de Shorts com API...")
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando verificação com API...")
     
     ids_ja_processados = carregar_ids_processados(DB_FILE)
-    print(f"ℹ️  Memória carregada com {len(ids_ja_processados)} shorts já analisados inicialmente.")
+    print(f"ℹ️  Memória carregada com {len(ids_ja_processados)} vídeos já processados.")
 
     try:
         youtube = build('youtube', 'v3', developerKey=API_KEY)
@@ -88,13 +103,13 @@ def verificar_canal_com_api(channel_id):
         ).execute()
         video_ids_api = [item['id']['videoId'] for item in search_response.get('items', [])]
     except Exception as e:
-        print(f"ERRO na busca por shorts: {e}")
+        print(f"ERRO na busca por vídeos: {e}")
         return
         
     ids_a_processar = [vid for vid in video_ids_api if vid not in ids_ja_processados]
     
     if not ids_a_processar:
-        print("Nenhum short novo para processar.")
+        print("Nenhum vídeo novo para processar.")
         return
     
     print(f"🔍 Encontrados {len(ids_a_processar)} vídeos novos para análise.")
@@ -107,6 +122,8 @@ def verificar_canal_com_api(channel_id):
         print(f"ERRO ao buscar detalhes dos vídeos: {e}")
         return
     
+    influencers = carregar_influencers(INFLUENCERS_FILE)
+    
     for video_item in video_details_response.get('items', []):
         id_recente = video_item['id']
         titulo = video_item['snippet']['title']
@@ -116,76 +133,29 @@ def verificar_canal_com_api(channel_id):
 
         print(f"\n--- Analisando: {titulo} ---")
 
-        if duration_seconds > 70:
-            print("🚫 Ignorado (Vídeo Longo).")
+        if duration_seconds <= 70:
+            print("🚫 Ignorado (Short).")
             marcar_como_processado(DB_FILE, id_recente, published_at)
             continue
 
-        # É um Short (<= 70s). Salvamos para observação.
-        salvar_para_observacao(DB_FILE, id_recente, titulo, published_at)
-        marcar_como_processado(DB_FILE, id_recente, published_at)
-
-    print("\nVerificação de Shorts novos concluída.")
-
-def buscar_shorts_virais_api():
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando busca global de Shorts (Copa/Futebol)...")
-    
-    ids_ja_processados = carregar_ids_processados(DB_FILE)
-    print(f"ℹ️  Memória carregada com {len(ids_ja_processados)} shorts já analisados inicialmente.")
-
-    try:
-        youtube = build('youtube', 'v3', developerKey=API_KEY)
-        # Busca os 50 vídeos globais mais relevantes
-        search_response = youtube.search().list(
-            q='copa OR futebol OR world cup',
-            part='id', 
-            maxResults=50, 
-            order='viewCount', # Busca os mais visualizados / em alta
-            type='video',
-            videoDuration='short' # Força a busca por vídeos curtos
-        ).execute()
-        video_ids_api = [item['id']['videoId'] for item in search_response.get('items', [])]
-    except Exception as e:
-        print(f"ERRO na busca por shorts: {e}")
-        return
+        encontrou_influencer = False
+        if influencers:
+            for influencer in influencers:
+                if influencer in titulo.lower():
+                    link = f"https://www.youtube.com/watch?v={id_recente}"
+                    print(f"🔥 INFLUENCER ENCONTRADO! '{influencer.capitalize()}' está no título.")
+                    print(f"🚨 ALERTA: BAIXAR IMEDIATAMENTE! Link: {link}")
+                    encontrou_influencer = True
+                    break
         
-    ids_a_processar = [vid for vid in video_ids_api if vid not in ids_ja_processados]
-    
-    if not ids_a_processar:
-        print("Nenhum short novo para processar.")
-        return
-    
-    print(f"🔍 Encontrados {len(ids_a_processar)} vídeos novos para análise.")
+        if not encontrou_influencer:
+            salvar_para_observacao(DB_FILE, id_recente, titulo, published_at)
 
-    try:
-        video_details_response = youtube.videos().list(
-            part='snippet,contentDetails', id=",".join(ids_a_processar)
-        ).execute()
-    except Exception as e:
-        print(f"ERRO ao buscar detalhes dos vídeos: {e}")
-        return
-    
-    for video_item in video_details_response.get('items', []):
-        id_recente = video_item['id']
-        titulo = video_item['snippet']['title']
-        published_at = video_item['snippet']['publishedAt'] # Captura a data de publicação
-        duration_iso = video_item['contentDetails']['duration']
-        duration_seconds = isodate.parse_duration(duration_iso).total_seconds()
-
-        print(f"\n--- Analisando: {titulo} ---")
-
-        if duration_seconds > 70:
-            print("🚫 Ignorado (Vídeo Longo).")
-            marcar_como_processado(DB_FILE, id_recente, published_at)
-            continue
-
-        # É um Short (<= 70s). Salvamos para observação.
-        salvar_para_observacao(DB_FILE, id_recente, titulo, published_at)
         marcar_como_processado(DB_FILE, id_recente, published_at)
 
-    print("\nVerificação de Shorts novos concluída.")
+    print("\nVerificação de todos os vídeos novos concluída.")
 
 if __name__ == "__main__":
     configurar_banco(DB_FILE)
     verificar_canal_com_api(CHANNEL_ID)
-    buscar_shorts_virais_api()
+    

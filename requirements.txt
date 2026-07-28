@@ -1,0 +1,25 @@
+# Paparazzi-Worker — dependências dos dois sistemas
+# Instale com:  pip install -r requirements.txt
+#
+# OBS: o FFmpeg NÃO é um pacote pip — instale pelo sistema:
+#   sudo apt install ffmpeg
+
+# --- Comum / YouTube ---
+google-api-python-client   # cliente da YouTube Data API (googleapiclient)
+isodate                    # parse de durações/datas ISO 8601
+python-dotenv              # carrega o .env
+requests                   # chamadas HTTP (LLM/Ollama, TikTok API, diagnósticos)
+
+# --- Coleta / Download ---
+yt-dlp                     # download de vídeos e shorts
+
+# --- IA / Transcrição (roteirizador + coletor do mirror) ---
+openai-whisper             # transcrição local (puxa o torch junto)
+torch                      # backend do Whisper (download grande, ~2GB)
+
+# --- Mirror-Clips: postagem no TikTok (Selenium) ---
+selenium                   # automação de navegador
+webdriver-manager          # baixa/gerencia o chromedriver
+
+# --- Detecção no Twitter/X (experimental) ---
+tweepy                     # API do Twitter/X
