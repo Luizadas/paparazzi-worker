@@ -443,6 +443,37 @@ class TikTokSeleniumPoster:
         log(f"⚠️  Selenium: NÃO foi possível selecionar a opção para '{PRIVACY_LEVEL}'.")
         return False
 
+    def _fechar_tour(self):
+        """Remove o tour/tutorial (react-joyride) e overlays que interceptam cliques."""
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        # 1) tenta um botão de fechar/pular, se existir
+        for xp in ["//button[contains(., 'Skip')]", "//button[contains(., 'Got it')]",
+                   "//button[contains(., 'Pular')]", "//button[contains(., 'Entendi')]",
+                   "//button[@aria-label='Close']"]:
+            try:
+                els = self.driver.find_elements(By.XPATH, xp)
+                if els:
+                    els[0].click()
+                    time.sleep(0.3)
+            except Exception:
+                pass
+        # 2) remove à força qualquer elemento do joyride/overlay via JS
+        try:
+            self.driver.execute_script(
+                "document.querySelectorAll("
+                "'.react-joyride__overlay,[data-test-id=\"overlay\"],"
+                ".react-joyride__spotlight,.react-joyride__tooltip')"
+                ".forEach(function(e){e.remove();});"
+            )
+        except Exception:
+            pass
+        # 3) ESC como reforço
+        try:
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        except Exception:
+            pass
+
     def _fazer_upload(self, video_path: str, caption: str):
         """Navega até a página de upload e faz o envio do vídeo."""
         from selenium.webdriver.common.by import By
@@ -469,6 +500,10 @@ class TikTokSeleniumPoster:
         log("⏳ Selenium: Aguardando processamento do vídeo pelo TikTok...")
         time.sleep(10)
 
+        # Fecha o tour/tutorial (react-joyride) que sobrepõe a página e intercepta
+        # cliques (ex: popup "New editing features added").
+        self._fechar_tour()
+
         # Preenche a legenda: limpa o texto auto-preenchido (nome do arquivo) e
         # digita a legenda gerada por IA. O editor é um contenteditable (DraftJS).
         try:
@@ -479,7 +514,11 @@ class TikTokSeleniumPoster:
                 )
             )
             self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", caption_field)
-            caption_field.click()
+            self._fechar_tour()  # garante que nada esteja sobrepondo antes do clique
+            try:
+                caption_field.click()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", caption_field)
             time.sleep(1)
 
             # Seleciona tudo e apaga o conteúdo pré-preenchido pelo TikTok
