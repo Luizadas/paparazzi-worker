@@ -18,6 +18,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
 REQ_FILE = ROOT / "requirements.txt"
+VENV_DIR = ROOT / "venv"
+
+
+def _garantir_venv():
+    """Se existe um venv no projeto e não estamos dentro dele, re-executa este
+    script usando o Python do venv (assim as dependências certas são usadas)."""
+    venv_py = VENV_DIR / "bin" / "python"
+    dentro_do_venv = Path(sys.prefix).resolve() == VENV_DIR.resolve()
+    if venv_py.exists() and not dentro_do_venv:
+        print(f"↻ Reiniciando dentro do venv: {venv_py}", flush=True)
+        os.execv(str(venv_py), [str(venv_py), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 # módulo importável -> pacote pip (para checar o que falta)
 MODULOS = {
@@ -53,7 +64,7 @@ def subir_dependencias(forcar=False):
         alvo = "requirements.txt" if forcar else f"faltando: {', '.join(faltando)}"
         print(f"📦 Instalando dependências ({alvo})...")
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--user", "-r", str(REQ_FILE)],
+            [sys.executable, "-m", "pip", "install", "-r", str(REQ_FILE)],
             check=False,
         )
     else:
@@ -204,6 +215,7 @@ def menu():
 
 
 if __name__ == "__main__":
+    _garantir_venv()
     try:
         menu()
     except KeyboardInterrupt:

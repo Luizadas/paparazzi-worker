@@ -3,6 +3,10 @@
 #
 # OBS: o FFmpeg NÃO é um pacote pip — instale pelo sistema:
 #   sudo apt install ffmpeg
+#
+# Máquina SEM GPU: usamos o torch versão CPU (evita ~2GB de libs CUDA/nvidia).
+# A linha abaixo aponta o índice de wheels CPU do PyTorch.
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 # --- Comum / YouTube ---
 google-api-python-client   # cliente da YouTube Data API (googleapiclient)
@@ -14,8 +18,8 @@ requests                   # chamadas HTTP (LLM/Ollama, TikTok API, diagnóstico
 yt-dlp                     # download de vídeos e shorts
 
 # --- IA / Transcrição (roteirizador + coletor do mirror) ---
-openai-whisper             # transcrição local (puxa o torch junto)
-torch                      # backend do Whisper (download grande, ~2GB)
+openai-whisper             # transcrição local (usa o torch)
+torch==2.13.0+cpu          # backend do Whisper — versão CPU (sem CUDA)
 numpy                      # análise de frames (detecção da faixa da legenda)
 Pillow                     # leitura de frames para detectar a legenda original
 

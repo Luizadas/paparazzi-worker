@@ -35,3 +35,7 @@ cortes_gerados/
 
 # Screenshots de scraping experimental
 comum/experimentais/*.png
+
+# Ambiente virtual Python
+venv/
+.venv/
