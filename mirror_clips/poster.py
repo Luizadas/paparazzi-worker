@@ -74,12 +74,14 @@ def salvar_fila(fila: list):
     with open(QUEUE_FILE, "w", encoding="utf-8") as f:
         json.dump(fila, f, ensure_ascii=False, indent=2)
 
-def adicionar_na_fila(video_path: str, titulo: str = ""):
-    """Chamado pelo coletor.py ao finalizar um vídeo processado."""
+def adicionar_na_fila(video_path: str, titulo: str = "", caption: str = ""):
+    """Chamado pelo coletor.py ao finalizar um vídeo processado.
+    'caption' é a legenda gerada por IA; se vazia, o poster usa o template padrão."""
     fila = carregar_fila()
     entrada = {
         "video_path": str(video_path),
         "titulo": titulo,
+        "caption": caption or "",
         "adicionado_em": datetime.now().isoformat(),
         "status": "pendente"
     }
@@ -219,9 +221,12 @@ class TikTokAPIposter:
         log("❌ API: Timeout ao aguardar publicação.")
         return False
 
-    def postar(self, video_path: str, titulo: str = "") -> bool:
+    def postar(self, video_path: str, titulo: str = "", caption: str = "") -> bool:
         if not self._verificar_token():
             return False
+
+        # Legenda: prioriza a gerada por IA; senão, template padrão.
+        titulo = caption.strip() if caption else titulo
 
         if not os.path.exists(video_path):
             log(f"❌ API: Arquivo não encontrado: {video_path}")
@@ -464,20 +469,33 @@ class TikTokSeleniumPoster:
         log("⏳ Selenium: Aguardando processamento do vídeo pelo TikTok...")
         time.sleep(10)
 
-        # Tenta preencher a legenda
+        # Preenche a legenda: limpa o texto auto-preenchido (nome do arquivo) e
+        # digita a legenda gerada por IA. O editor é um contenteditable (DraftJS).
         try:
+            from selenium.webdriver.common.keys import Keys
             caption_field = wait.until(
                 EC.presence_of_element_located(
                     (By.CSS_SELECTOR, "div[contenteditable='true']")
                 )
             )
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", caption_field)
             caption_field.click()
             time.sleep(1)
-            # Limpa o campo e digita a legenda
+
+            # Seleciona tudo e apaga o conteúdo pré-preenchido pelo TikTok
+            caption_field.send_keys(Keys.CONTROL, "a")
+            time.sleep(0.3)
+            caption_field.send_keys(Keys.DELETE)
+            time.sleep(0.3)
+
+            # Digita a legenda. Hashtags disparam um menu de sugestões; um espaço
+            # após cada palavra fecha o menu e evita seleção acidental.
             caption_field.send_keys(caption)
-            log(f"✅ Selenium: Legenda preenchida.")
-        except Exception:
-            log("⚠️  Selenium: Não foi possível preencher a legenda automaticamente.")
+            time.sleep(0.5)
+            caption_field.send_keys(" ")
+            log(f"✅ Selenium: Legenda preenchida: {caption[:80]}...")
+        except Exception as e:
+            log(f"⚠️  Selenium: Não foi possível preencher a legenda automaticamente: {e}")
 
         # Ajusta a visibilidade do post (público/amigos/privado) antes de publicar
         privacidade_ok = self._definir_privacidade(wait)
@@ -561,12 +579,13 @@ class TikTokSeleniumPoster:
             self.driver.save_screenshot(str(Path(__file__).parent / "selenium_debug.png"))
             return False
 
-    def postar(self, video_path: str, titulo: str = "") -> bool:
+    def postar(self, video_path: str, titulo: str = "", caption: str = "") -> bool:
         try:
             self._iniciar_driver()
             self._injetar_cookies()
-            caption = gerar_caption(titulo)
-            resultado = self._fazer_upload(video_path, caption)
+            # Usa a legenda gerada por IA se houver; senão, cai no template padrão.
+            caption_final = caption.strip() if caption else gerar_caption(titulo)
+            resultado = self._fazer_upload(video_path, caption_final)
             return resultado
         except Exception as e:
             log(f"❌ Selenium: Erro geral: {e}")
@@ -590,10 +609,11 @@ class TikTokSeleniumPoster:
 #  LÓGICA PRINCIPAL
 # ─────────────────────────────────────────────
 
-def postar_video(video_path: str, titulo: str = "", modo: str = "auto") -> bool:
+def postar_video(video_path: str, titulo: str = "", modo: str = "auto", caption: str = "") -> bool:
     """
     Posta um vídeo no TikTok.
     modo: 'auto' | 'api' | 'selenium'
+    caption: legenda gerada por IA (se vazia, usa o template padrão).
     """
     log(f"\n{'='*50}")
     log(f"🚀 Iniciando postagem: {os.path.basename(video_path)}")
@@ -602,7 +622,7 @@ def postar_video(video_path: str, titulo: str = "", modo: str = "auto") -> bool:
     if modo in ("auto", "api"):
         log("--- Tentando API Oficial ---")
         poster = TikTokAPIposter()
-        sucesso = poster.postar(video_path, titulo)
+        sucesso = poster.postar(video_path, titulo, caption)
         if sucesso:
             return True
         elif modo == "api":
@@ -614,7 +634,7 @@ def postar_video(video_path: str, titulo: str = "", modo: str = "auto") -> bool:
     if modo in ("auto", "selenium"):
         log("--- Tentando Selenium ---")
         poster = TikTokSeleniumPoster()
-        return poster.postar(video_path, titulo)
+        return poster.postar(video_path, titulo, caption)
 
     return False
 
@@ -633,9 +653,10 @@ def processar_fila(modo: str = "auto"):
     for item in pendentes:
         video_path = item["video_path"]
         titulo = item.get("titulo", "")
+        caption = item.get("caption", "")
 
         marcar_fila_status(video_path, "processando")
-        sucesso = postar_video(video_path, titulo, modo)
+        sucesso = postar_video(video_path, titulo, modo, caption)
 
         if sucesso:
             marcar_fila_status(video_path, "publicado")
