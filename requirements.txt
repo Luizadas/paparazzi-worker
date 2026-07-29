@@ -16,6 +16,8 @@ yt-dlp                     # download de vídeos e shorts
 # --- IA / Transcrição (roteirizador + coletor do mirror) ---
 openai-whisper             # transcrição local (puxa o torch junto)
 torch                      # backend do Whisper (download grande, ~2GB)
+numpy                      # análise de frames (detecção da faixa da legenda)
+Pillow                     # leitura de frames para detectar a legenda original
 
 # --- Mirror-Clips: postagem no TikTok (Selenium) ---
 selenium                   # automação de navegador
