@@ -231,7 +231,7 @@ def _fmt_ass_ts(s):
     return f"{h:d}:{m:02d}:{s:05.2f}"
 
 
-def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=26):
+def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=18):
     """
     Gera um arquivo .ASS com legendas de UMA linha (agrupa palavras até max_chars),
     texto branco em negrito com contorno, posicionado exatamente no centro vertical
@@ -254,7 +254,15 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=26):
     if cur:
         cues.append((ini, cur[-1][1], " ".join(x[2] for x in cur)))
 
-    fs = int(H * 0.028)
+    max_chars = max((len(t) for _, _, t in cues), default=0)
+    # Fonte GRANDE, mas limitada pela largura da legenda mais longa para NÃO
+    # encostar na borda (mantém a linha dentro de ~86% da largura do vídeo).
+    base_fs = int(H * 0.042)
+    if max_chars > 0:
+        fs_cap = int(0.84 * W / (0.58 * max_chars))
+        fs = max(30, min(base_fs, fs_cap))
+    else:
+        fs = base_fs
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -277,7 +285,6 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=26):
         )
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write("\n".join(linhas))
-    max_chars = max((len(t) for _, _, t in cues), default=0)
     return len(cues), max_chars, fs
 
 
