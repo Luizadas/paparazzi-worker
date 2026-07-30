@@ -133,52 +133,104 @@ def _dimensoes_video(video_path):
         return 1080, 1920
 
 
-def detectar_faixa_legenda(video_path, n=18):
+_OCR_READER = None
+
+
+def _get_ocr_reader():
+    """Inicializa o EasyOCR uma vez (import tardio; baixa modelo no 1º uso)."""
+    global _OCR_READER
+    if _OCR_READER is None:
+        import easyocr
+        _OCR_READER = easyocr.Reader(['pt'], gpu=False, verbose=False)
+    return _OCR_READER
+
+
+def detectar_legenda_ocr(video_path, n=16):
     """
-    Detecta a faixa vertical onde está a legenda queimada do vídeo ORIGINAL
-    (meio ou embaixo), analisando os frames. A legenda muda de texto ao longo
-    do tempo (alta variância temporal) enquanto o cenário/equipamentos são
-    estáticos — por isso usamos energia_de_borda * variância_temporal.
-    Retorna (centro_frac, altura_frac). Fallback (0.5, 0.11) se falhar.
+    Detecta via OCR a legenda QUEIMADA do vídeo ORIGINAL (antes do espelhamento):
+    se existe, ONDE está (caixa exata) e o ESTILO (barra preta vs texto solto).
+
+    Como a detecção roda no vídeo original, o texto está normal (não espelhado),
+    então o OCR o localiza bem. A posição vertical não muda com o hflip.
+
+    Retorna dict:
+      {'tem_legenda': True, 'estilo': 'barra'|'blur',
+       'x0','x1','y0','y1','cy'}  (frações 0..1, caixa já com margem)
+    ou {'tem_legenda': False} quando não há legenda persistente (→ legenda embaixo).
     """
     tmp = tempfile.mkdtemp()
     try:
         dur = float(subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "csv=p=0", video_path], capture_output=True, text=True).stdout.strip())
-        frames = []
+        paths = []
         for i in range(n):
             t = dur * (i + 0.5) / n
             out = os.path.join(tmp, f"f{i}.png")
             subprocess.run(["ffmpeg", "-y", "-ss", f"{t:.2f}", "-i", video_path,
-                            "-frames:v", "1", "-vf", "scale=240:-1", out, "-loglevel", "error"],
+                            "-frames:v", "1", "-vf", "scale=540:-1", out, "-loglevel", "error"],
                            check=False)
             if os.path.exists(out):
-                frames.append(np.asarray(Image.open(out).convert("L"), dtype=np.float32))
-        if len(frames) < 3:
-            return 0.5, 0.11
-        fr = np.array(frames)                                  # [n, H, W]
-        H = fr.shape[1]
-        edge = np.abs(np.diff(fr, axis=2)).sum(axis=2)         # bordas verticais por linha
-        score = edge.mean(axis=0) * fr.std(axis=0).mean(axis=1)  # borda * variância temporal
-        k = max(3, H // 60)
-        score = np.convolve(score, np.ones(k) / k, mode="same")
-        y0, y1 = int(0.28 * H), int(0.93 * H)                 # ignora topo (logo) e base (UI)
-        reg = score.copy(); reg[:y0] = 0; reg[y1:] = 0
-        pico = int(np.argmax(reg))
-        lim = 0.45 * reg[pico]
-        a = pico
-        while a > y0 and reg[a] > lim:
-            a -= 1
-        b = pico
-        while b < y1 and reg[b] > lim:
-            b += 1
-        centro = (a + b) / 2.0 / H
-        altura = min(max((b - a) / H, 0.10), 0.22)
-        return round(centro, 3), round(altura, 3)
+                paths.append(out)
+        if len(paths) < 3:
+            return {"tem_legenda": False}
+
+        reader = _get_ocr_reader()
+        H, W = np.asarray(Image.open(paths[0])).shape[:2]
+
+        caixas = []  # (x0,x1,y0,y1,yc,idx_frame) em fração
+        for idx, p in enumerate(paths):
+            img = np.asarray(Image.open(p).convert("RGB"))
+            for box, txt, conf in reader.readtext(img):
+                if conf < 0.35 or len(txt.strip()) < 2:
+                    continue
+                xs = [q[0] for q in box]; ys = [q[1] for q in box]
+                yc = (min(ys) + max(ys)) / 2 / H
+                if yc < 0.30 or yc > 0.92:          # ignora topo (logo) e base (UI)
+                    continue
+                caixas.append((min(xs)/W, max(xs)/W, min(ys)/H, max(ys)/H, yc, idx))
+
+        if len(caixas) < 3:
+            return {"tem_legenda": False}
+
+        # Agrupa por y-centro: a banda com MAIS caixas é a legenda (±8%)
+        melhor = []
+        for c in caixas:
+            grupo = [b for b in caixas if abs(b[4] - c[4]) < 0.08]
+            if len(grupo) > len(melhor):
+                melhor = grupo
+
+        frames_distintos = len(set(b[5] for b in melhor))
+        if len(melhor) < 3 or frames_distintos < max(2, int(0.25 * len(paths))):
+            return {"tem_legenda": False}    # transitório/ruído → sem legenda persistente
+
+        # Caixa-união (percentis no X p/ ignorar outliers; min/max no Y) + margem
+        x0 = float(np.percentile([b[0] for b in melhor], 5))
+        x1 = float(np.percentile([b[1] for b in melhor], 95))
+        y0 = min(b[2] for b in melhor)
+        y1 = max(b[3] for b in melhor)
+        x0 = max(0.0, x0 - 0.02); x1 = min(1.0, x1 + 0.02)
+        y0 = max(0.0, y0 - 0.015); y1 = min(1.0, y1 + 0.015)
+        cy = (y0 + y1) / 2
+
+        # Classifica barra vs blur: fração de pixels quase-pretos na banda
+        gy0, gy1 = int(y0 * H), int(y1 * H)
+        escuros = []
+        for p in paths:
+            g = np.asarray(Image.open(p).convert("L"), dtype=np.float32)
+            banda = g[gy0:gy1, :]
+            if banda.size:
+                escuros.append(float((banda < 45).mean()))
+        frac_escura = float(np.mean(escuros)) if escuros else 0.0
+        estilo = "barra" if frac_escura > 0.5 else "blur"
+
+        return {"tem_legenda": True, "estilo": estilo,
+                "x0": round(x0, 4), "x1": round(x1, 4),
+                "y0": round(y0, 4), "y1": round(y1, 4),
+                "cy": round(cy, 4), "frac_escura": round(frac_escura, 3)}
     except Exception as e:
-        print(f"⚠️ Detecção da legenda falhou ({e}); usando o meio como padrão.")
-        return 0.5, 0.11
+        print(f"⚠️ Detecção OCR falhou ({e}); legenda irá para baixo, sem cobertura.")
+        return {"tem_legenda": False}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -389,22 +441,29 @@ def processar_video_whisper_nativo(video_path):
         print(f"❌ Erro ao extrair áudio: {e.stderr.decode('utf-8', errors='ignore')}")
         return
 
-    # Passo 2: Transcrever (com timestamps por palavra) e gerar o ASS de 1 linha
+    # Passo 2: Transcrever (timestamps por palavra), detectar a legenda original
+    # (OCR) e gerar o ASS de 1 linha na posição certa.
     print("Passo 2/3: Gerando legendas com Whisper (Nativo)...")
     ass_path = os.path.join(base_dir, f"{base_name}.ass")
     texto_transcricao = ""
+    leg = {"tem_legenda": False}
     try:
         model = whisper.load_model("base")
         result = model.transcribe(audio_path, fp16=False, word_timestamps=True)
         texto_transcricao = (result.get("text") or "").strip()  # base para a legenda IA
 
-        # Detecta ONDE está a legenda do vídeo original (meio ou embaixo)
         W, H = _dimensoes_video(video_path)
-        centro_frac, altura_frac = detectar_faixa_legenda(video_path)
-        centro_y = int(centro_frac * H)
-        tarja_h = max(int(altura_frac * H), int(H * 0.09))
-        print(f"🎯 Legenda original detectada em ~{int(centro_frac*100)}% da altura "
-              f"(tarja de {tarja_h}px).")
+
+        # Detecta (via OCR) a legenda QUEIMADA do vídeo ORIGINAL (texto normal)
+        print("🔎 Detectando a legenda original (OCR)...")
+        leg = detectar_legenda_ocr(video_path)
+        if leg.get("tem_legenda"):
+            centro_y = int(leg["cy"] * H)
+            print(f"🎯 Legenda original em y~{int(leg['cy']*100)}% | estilo: "
+                  f"{leg['estilo']} (frac_escura={leg.get('frac_escura')})")
+        else:
+            centro_y = int(0.85 * H)  # sem legenda original → a nossa vai para baixo
+            print("🎯 Sem legenda no original → nossa legenda irá para baixo (sem cobertura).")
 
         n_cues = gerar_ass_legenda(result["segments"], ass_path, W, H, centro_y)
         print(f"📝 {n_cues} legendas de 1 linha geradas.")
@@ -416,24 +475,39 @@ def processar_video_whisper_nativo(video_path):
         print("❌ Arquivo de legenda não foi gerado.")
         return
 
-    # Passo 3: Espelhar o vídeo, cobrir a legenda original e queimar a nova
+    # Passo 3: Espelhar e cobrir a legenda original conforme o estilo detectado
     print("Passo 3/3: Espelhando o vídeo e adicionando legendas...")
     try:
         ass_basename = os.path.basename(ass_path)
         video_basename = os.path.basename(video_path)
         final_basename = os.path.basename(final_output)
 
-        # hflip espelha o vídeo; a TARJA PRETA de largura total cobre 100% a
-        # legenda original (agora espelhada) exatamente na altura detectada; e o
-        # ASS desenha a legenda branca de 1 linha centralizada sobre a tarja.
-        y_tarja = max(0, centro_y - tarja_h // 2)
-        tarja = f"drawbox=x=0:y={y_tarja}:w=iw:h={tarja_h}:color=black:t=fill"
-        vf_filter = f"hflip,{tarja},ass={ass_basename}"
+        if leg.get("tem_legenda") and leg["estilo"] == "barra":
+            # Original TEM barra → tarja preta de largura total na faixa detectada
+            gy = max(0, int(leg["y0"] * H)); gh = max(1, int((leg["y1"] - leg["y0"]) * H))
+            gh = min(gh, H - gy)
+            vf = f"hflip,drawbox=x=0:y={gy}:w=iw:h={gh}:color=black:t=fill,ass={ass_basename}"
+            ff_args = ["-vf", vf]
+            print(f"🎬 Cobertura: TARJA preta (y={gy}, h={gh}).")
+        elif leg.get("tem_legenda") and leg["estilo"] == "blur":
+            # Original SEM barra → blur só na caixa onde as palavras aparecem
+            bx = max(0, int(leg["x0"] * W)); bw = max(1, int((leg["x1"] - leg["x0"]) * W))
+            by = max(0, int(leg["y0"] * H)); bh = max(1, int((leg["y1"] - leg["y0"]) * H))
+            bw = min(bw, W - bx); bh = min(bh, H - by)
+            fc = (f"[0:v]hflip,split=2[b][t];"
+                  f"[t]crop={bw}:{bh}:{bx}:{by},boxblur=18:2[bl];"
+                  f"[b][bl]overlay={bx}:{by}[base];"
+                  f"[base]ass={ass_basename}")
+            ff_args = ["-filter_complex", fc]
+            print(f"🎬 Cobertura: BLUR na caixa (x={bx},y={by},w={bw},h={bh}).")
+        else:
+            # Sem legenda no original → só espelha; a nossa legenda vai embaixo
+            ff_args = ["-vf", f"hflip,ass={ass_basename}"]
+            print("🎬 Sem cobertura (legenda embaixo).")
 
-        subprocess.run([
-            "ffmpeg", "-i", video_basename, "-vf", vf_filter,
-            "-c:a", "copy", final_basename, "-y"
-        ], cwd=base_dir, check=True, capture_output=True)
+        subprocess.run(
+            ["ffmpeg", "-i", video_basename, *ff_args, "-c:a", "copy", final_basename, "-y"],
+            cwd=base_dir, check=True, capture_output=True)
         print(f"✅ Processamento concluído! Vídeo final salvo em: {final_output}")
 
         # Enfileira para postagem automática (com legenda gerada por IA)

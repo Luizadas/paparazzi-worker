@@ -22,6 +22,9 @@ openai-whisper             # transcrição local (usa o torch)
 torch==2.13.0+cpu          # backend do Whisper — versão CPU (sem CUDA)
 numpy                      # análise de frames (detecção da faixa da legenda)
 Pillow                     # leitura de frames para detectar a legenda original
+easyocr                    # OCR: localiza a legenda queimada (posição exata, qualquer estilo)
+# obs: easyocr requer torchvision compatível com o torch instalado (CPU):
+#   pip install torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # --- Mirror-Clips: postagem no TikTok (Selenium) ---
 selenium                   # automação de navegador
