@@ -211,6 +211,74 @@ def _get_ocr_reader():
     return _OCR_READER
 
 
+def corrigir_texto_ia(texto: str) -> str:
+    """Corrige SÓ caracteres trocados pelo OCR (0→o, 1→i, rn→m...) numa frase,
+    SEM remover/adicionar palavras. Se a IA mexer demais (perder palavras) ou
+    falhar, devolve o texto original com uma pré-correção leve."""
+    texto = (texto or "").strip()
+    if not texto:
+        return texto
+    # pré-correção leve de erros comuns (dígito isolado no lugar de letra)
+    base = re.sub(r"\b0\b", "o", texto)
+    base = re.sub(r"\b1\b", "i", base)
+    base = (base[:1].upper() + base[1:]) if base else base   # 1ª letra maiúscula
+
+    prompt = (
+        "Corrija SOMENTE erros de OCR (caracteres trocados, ex: 0->o, 1->i, rn->m) "
+        "nesta frase em português do Brasil. É TERMINANTEMENTE PROIBIDO remover ou "
+        "adicionar palavras, mudar a ordem ou a pontuação — devolva a MESMA frase, "
+        "com a MESMA quantidade de palavras, só com os caracteres corrigidos. "
+        "Sem aspas, sem explicação.\n\nFRASE: " + base
+    )
+    try:
+        resp = requests.post(LLM_API_URL, json={
+            "model": LLM_MODEL, "prompt": prompt, "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 80},
+        }, timeout=60)
+        resp.raise_for_status()
+        out = _sanitizar_legenda(resp.json().get("response", "") or "").strip()
+        # TRAVA: só aceita se NÃO perdeu palavras (senão mantém o OCR pré-corrigido)
+        if out and len(out.split()) >= len(base.split()):
+            return out
+        return base
+    except Exception:
+        return base
+
+
+def _detectar_meme_topo(caixas_topo, n_frames):
+    """
+    Detecta uma FRASE DE MEME estática no topo do vídeo (aquele texto de contexto
+    que forma a piada). Precisa ser persistente (aparece na maioria dos frames) e
+    ter conteúdo de frase (>=8 chars, >=2 palavras) — assim ignora logos/marcas.
+    Retorna {'texto', 'x0','x1','y0','y1'} (frações) ou None.
+    """
+    if len(caixas_topo) < 2:
+        return None
+    por_frame = {}
+    for (x0, x1, y0, y1, yc, idx, t) in caixas_topo:
+        por_frame.setdefault(idx, []).append((y0, x0, t))
+    if len(por_frame) < max(2, int(0.4 * n_frames)):
+        return None   # não é persistente → provavelmente não é meme
+
+    def texto_do_frame(itens):
+        return " ".join(z[2] for z in sorted(itens, key=lambda z: (round(z[0], 2), z[1])))
+
+    melhor_idx = max(por_frame, key=lambda i: len(texto_do_frame(por_frame[i])))
+    texto = texto_do_frame(por_frame[melhor_idx])
+    if len(texto) < 8 or len(texto.split()) < 2:
+        return None   # curto demais → provável logo/marca
+
+    xs0 = [b[0] for b in caixas_topo]; xs1 = [b[1] for b in caixas_topo]
+    ys0 = [b[2] for b in caixas_topo]; ys1 = [b[3] for b in caixas_topo]
+    return {
+        "texto": texto,
+        "x0": round(max(0.0, min(xs0) - 0.02), 4),
+        "x1": round(min(1.0, max(xs1) + 0.02), 4),
+        "y0": round(max(0.0, min(ys0) - 0.01), 4),
+        "y1": round(min(1.0, max(ys1) + 0.01), 4),
+    }
+
+
 def detectar_legenda_ocr(video_path, n=16):
     """
     Detecta via OCR a legenda QUEIMADA do vídeo ORIGINAL (antes do espelhamento):
@@ -244,20 +312,26 @@ def detectar_legenda_ocr(video_path, n=16):
         reader = _get_ocr_reader()
         H, W = np.asarray(Image.open(paths[0])).shape[:2]
 
-        caixas = []  # (x0,x1,y0,y1,yc,idx_frame) em fração
+        caixas = []       # legenda (meio/baixo): (x0,x1,y0,y1,yc,idx)
+        caixas_topo = []  # frase de meme no topo: (x0,x1,y0,y1,yc,idx,texto)
         for idx, p in enumerate(paths):
             img = np.asarray(Image.open(p).convert("RGB"))
             for box, txt, conf in reader.readtext(img):
-                if conf < 0.35 or len(txt.strip()) < 2:
+                t = txt.strip()
+                if conf < 0.35 or len(t) < 2:
                     continue
                 xs = [q[0] for q in box]; ys = [q[1] for q in box]
                 yc = (min(ys) + max(ys)) / 2 / H
-                if yc < 0.30 or yc > 0.92:          # ignora topo (logo) e base (UI)
-                    continue
-                caixas.append((min(xs)/W, max(xs)/W, min(ys)/H, max(ys)/H, yc, idx))
+                caixa = (min(xs)/W, max(xs)/W, min(ys)/H, max(ys)/H, yc, idx)
+                if 0.30 <= yc <= 0.92:              # legenda (meio/baixo)
+                    caixas.append(caixa)
+                elif 0.02 <= yc < 0.30 and len(t) >= 3:  # possível meme no topo
+                    caixas_topo.append(caixa + (t,))
+
+        meme = _detectar_meme_topo(caixas_topo, len(paths))
 
         if len(caixas) < 3:
-            return {"tem_legenda": False}
+            return {"tem_legenda": False, "meme": meme}
 
         # Agrupa por y-centro: a banda com MAIS caixas é a legenda (±8%)
         melhor = []
@@ -268,7 +342,7 @@ def detectar_legenda_ocr(video_path, n=16):
 
         frames_distintos = len(set(b[5] for b in melhor))
         if len(melhor) < 3 or frames_distintos < max(2, int(0.25 * len(paths))):
-            return {"tem_legenda": False}    # transitório/ruído → sem legenda persistente
+            return {"tem_legenda": False, "meme": meme}   # sem legenda persistente
 
         # Caixa-união (percentis no X p/ ignorar outliers; min/max no Y) + margem
         x0 = float(np.percentile([b[0] for b in melhor], 5))
@@ -279,11 +353,11 @@ def detectar_legenda_ocr(video_path, n=16):
         y0 = max(0.0, y0 - 0.015); y1 = min(1.0, y1 + 0.015)
         cy = (y0 + y1) / 2
 
-        # Sempre BLUR (sem tarja): só devolvemos a caixa da legenda original.
+        # Sempre BLUR (sem tarja) na legenda; 'meme' preserva a frase do topo.
         return {"tem_legenda": True,
                 "x0": round(x0, 4), "x1": round(x1, 4),
                 "y0": round(y0, 4), "y1": round(y1, 4),
-                "cy": round(cy, 4)}
+                "cy": round(cy, 4), "meme": meme}
     except Exception as e:
         print(f"⚠️ Detecção OCR falhou ({e}); legenda irá para baixo, sem cobertura.")
         return {"tem_legenda": False}
@@ -297,11 +371,26 @@ def _fmt_ass_ts(s):
     return f"{h:d}:{m:02d}:{s:05.2f}"
 
 
-def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=18):
+def _quebrar_linhas(texto, max_chars):
+    """Quebra um texto em linhas de até max_chars caracteres (por palavra)."""
+    linhas, atual = [], ""
+    for w in texto.split():
+        if atual and len(atual) + 1 + len(w) > max_chars:
+            linhas.append(atual)
+            atual = w
+        else:
+            atual = (atual + " " + w).strip()
+    if atual:
+        linhas.append(atual)
+    return linhas or [texto]
+
+
+def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=18, meme=None):
     """
     Gera um arquivo .ASS com legendas de UMA linha (agrupa palavras até max_chars),
-    texto branco em negrito com contorno, posicionado exatamente no centro vertical
-    detectado (\\pos), para ficar sobre a tarja preta.
+    texto branco em negrito com contorno, posicionado no centro vertical detectado
+    (\\pos), sobre o blur. Se 'meme' for dado, adiciona um evento ESTÁTICO no topo
+    reescrevendo a frase de meme (preservada) sobre o blur do topo.
     """
     cues, cur, ini = [], [], None
     for seg in segments:
@@ -349,6 +438,21 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=18):
             f"Dialogue: 0,{_fmt_ass_ts(st)},{_fmt_ass_ts(en)},Def,,0,0,0,,"
             f"{{\\an5\\pos({W // 2},{centro_y_px})}}{txt}"
         )
+
+    # Frase de MEME no topo: evento ESTÁTICO (dura o vídeo todo), reescrito sobre
+    # o blur, preservando o texto original (já corrigido por IA).
+    if meme and meme.get("texto"):
+        linhas_meme = _quebrar_linhas(meme["texto"], 18)
+        maior = max((len(l) for l in linhas_meme), default=1)
+        mfs = max(28, min(int(H * 0.038), int(0.84 * W / (0.58 * maior))))
+        mcx = int((meme["x0"] + meme["x1"]) / 2 * W)
+        mcy = int((meme["y0"] + meme["y1"]) / 2 * H)
+        texto_meme = "\\N".join(linhas_meme)
+        linhas.append(
+            f"Dialogue: 0,0:00:00.00,9:59:59.99,Def,,0,0,0,,"
+            f"{{\\an5\\pos({mcx},{mcy})\\fs{mfs}}}{texto_meme}"
+        )
+
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write("\n".join(linhas))
     return len(cues), max_chars, fs
@@ -526,7 +630,14 @@ def processar_video_whisper_nativo(video_path):
             centro_y = int(0.85 * H)  # sem legenda original → a nossa vai para baixo
             print("🎯 Sem legenda no original → nossa legenda irá para baixo (sem blur).")
 
-        n_cues, max_chars, fs = gerar_ass_legenda(segmentos, ass_path, W, H, centro_y)
+        # Frase de MEME no topo (se houver): preserva o texto, corrigindo via IA
+        meme = leg.get("meme") if isinstance(leg, dict) else None
+        if meme and meme.get("texto"):
+            print(f"🧩 Meme no topo: '{meme['texto']}' — corrigindo via IA...")
+            meme["texto"] = corrigir_texto_ia(meme["texto"])
+            print(f"   → meme reescrito: '{meme['texto']}'")
+
+        n_cues, max_chars, fs = gerar_ass_legenda(segmentos, ass_path, W, H, centro_y, meme=meme)
         print(f"📝 {n_cues} legendas de 1 linha geradas (máx {max_chars} chars).")
     except Exception as e:
         print(f"❌ Erro ao rodar whisper internamente: {e}")
@@ -543,35 +654,45 @@ def processar_video_whisper_nativo(video_path):
         video_basename = os.path.basename(video_path)
         final_basename = os.path.basename(final_output)
 
+        # Monta as caixas de BLUR: a da legenda (união com a nossa) e a do meme.
+        blur_boxes = []
         if leg.get("tem_legenda"):
-            # SEMPRE blur. A caixa do blur = união da legenda ORIGINAL (OCR) com a
-            # caixa da NOSSA legenda (centralizada), pra que a nossa fique
-            # ESTRITAMENTE em cima do blur. Blur forte.
             ox0 = int(leg["x0"] * W); ox1 = int(leg["x1"] * W)
             oy0 = int(leg["y0"] * H); oy1 = int(leg["y1"] * H)
-            # caixa estimada da nossa legenda (centralizada em W/2)
-            char_w = 0.55 * fs
+            char_w = 0.55 * fs                          # caixa da NOSSA legenda
             sub_w = min(int(W * 0.94), int(max_chars * char_w) + int(0.05 * W))
             sub_h = int(fs * 1.7)
             sx = (W - sub_w) // 2
             sy = centro_y - sub_h // 2
-            # união + margem
             m = int(0.01 * W)
-            bx = max(0, min(ox0, sx) - m)
-            bx1 = min(W, max(ox1, sx + sub_w) + m)
-            by = max(0, min(oy0, sy) - m)
-            by1 = min(H, max(oy1, sy + sub_h) + m)
-            bw = max(1, bx1 - bx); bh = max(1, by1 - by)
-            # blur FORTE via gblur (Gaussian): sigma alto, sem limite de raio
-            sigma = max(16, min(bw, bh) // 5)
-            fc = (f"[0:v]hflip,split=2[b][t];"
-                  f"[t]crop={bw}:{bh}:{bx}:{by},gblur=sigma={sigma}[bl];"
-                  f"[b][bl]overlay={bx}:{by}[base];"
-                  f"[base]ass={ass_basename}")
-            ff_args = ["-filter_complex", fc]
-            print(f"🎬 Cobertura: BLUR forte gblur (x={bx},y={by},w={bw},h={bh},sigma={sigma}).")
+            bx = max(0, min(ox0, sx) - m); bx1 = min(W, max(ox1, sx + sub_w) + m)
+            by = max(0, min(oy0, sy) - m); by1 = min(H, max(oy1, sy + sub_h) + m)
+            blur_boxes.append((bx, by, max(1, bx1 - bx), max(1, by1 - by)))
+        if meme:
+            mx = int(meme["x0"] * W); mx1 = int(meme["x1"] * W)
+            my = int(meme["y0"] * H); my1 = int(meme["y1"] * H)
+            mm = int(0.015 * W)
+            mx = max(0, mx - mm); my = max(0, my - mm)
+            blur_boxes.append((mx, my, min(W - mx, mx1 - mx + 2 * mm),
+                               min(H - my, my1 - my + 2 * mm)))
+
+        if blur_boxes:
+            # Cadeia de blurs localizados (gblur forte) + a legenda/meme por cima (ass)
+            partes = ["[0:v]hflip[v0]"]
+            prev = "v0"
+            for i, (x, y, w, h) in enumerate(blur_boxes):
+                sig = max(16, min(w, h) // 5)
+                partes.append(f"[{prev}]split=2[{prev}a][{prev}t]")
+                partes.append(f"[{prev}t]crop={w}:{h}:{x}:{y},gblur=sigma={sig}[bl{i}]")
+                partes.append(f"[{prev}a][bl{i}]overlay={x}:{y}[v{i+1}]")
+                prev = f"v{i+1}"
+            partes.append(f"[{prev}]ass={ass_basename}")
+            ff_args = ["-filter_complex", ";".join(partes)]
+            print(f"🎬 Cobertura: {len(blur_boxes)} blur(s) "
+                  f"({'legenda' if leg.get('tem_legenda') else ''}"
+                  f"{'+meme' if meme else ''}).")
         else:
-            # Sem legenda no original → só espelha; a nossa legenda vai embaixo
+            # Sem legenda nem meme no original → só espelha; nossa legenda embaixo
             ff_args = ["-vf", f"hflip,ass={ass_basename}"]
             print("🎬 Sem cobertura (legenda embaixo).")
 
