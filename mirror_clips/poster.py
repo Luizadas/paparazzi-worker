@@ -61,14 +61,39 @@ def gerar_caption(titulo: str = "") -> str:
 
 
 # ─────────────────────────────────────────────
-#  FILA DE POSTAGEM
+#  FILA DE POSTAGEM  (compartilhada entre o processador e o postador)
 # ─────────────────────────────────────────────
+
+import fcntl
+from contextlib import contextmanager
+
+LOCK_FILE = Path(__file__).parent / ".fila.lock"
+# Sinal criado pelo orquestrador quando o processamento termina; o poster --watch
+# drena o restante da fila e então encerra.
+STOP_FLAG = Path(__file__).parent / ".processamento_concluido"
+# Pausa curta entre postagens (o próximo vídeo já é processado em paralelo).
+POST_GAP = int(os.getenv("POST_GAP", "15"))
+
+
+@contextmanager
+def _lock_fila():
+    """Trava exclusiva entre processos para ler/gravar a fila com segurança."""
+    with open(LOCK_FILE, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
 
 def carregar_fila() -> list:
     if not QUEUE_FILE.exists():
         return []
-    with open(QUEUE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(QUEUE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
 
 def salvar_fila(fila: list):
     with open(QUEUE_FILE, "w", encoding="utf-8") as f:
@@ -77,25 +102,39 @@ def salvar_fila(fila: list):
 def adicionar_na_fila(video_path: str, titulo: str = "", caption: str = ""):
     """Chamado pelo coletor.py ao finalizar um vídeo processado.
     'caption' é a legenda gerada por IA; se vazia, o poster usa o template padrão."""
-    fila = carregar_fila()
-    entrada = {
-        "video_path": str(video_path),
-        "titulo": titulo,
-        "caption": caption or "",
-        "adicionado_em": datetime.now().isoformat(),
-        "status": "pendente"
-    }
-    fila.append(entrada)
-    salvar_fila(fila)
+    with _lock_fila():
+        fila = carregar_fila()
+        fila.append({
+            "video_path": str(video_path),
+            "titulo": titulo,
+            "caption": caption or "",
+            "adicionado_em": datetime.now().isoformat(),
+            "status": "pendente",
+        })
+        salvar_fila(fila)
     log(f"📋 Vídeo enfileirado para postagem: {video_path}")
 
 def marcar_fila_status(video_path: str, status: str):
-    fila = carregar_fila()
-    for item in fila:
-        if item["video_path"] == str(video_path):
-            item["status"] = status
-            item["atualizado_em"] = datetime.now().isoformat()
-    salvar_fila(fila)
+    with _lock_fila():
+        fila = carregar_fila()
+        for item in fila:
+            if item["video_path"] == str(video_path):
+                item["status"] = status
+                item["atualizado_em"] = datetime.now().isoformat()
+        salvar_fila(fila)
+
+def reivindicar_proximo():
+    """Pega ATOMICAMENTE o próximo item 'pendente', marca 'postando' e o retorna
+    (ou None se não houver). Permite que processador e postador rodem em paralelo."""
+    with _lock_fila():
+        fila = carregar_fila()
+        for item in fila:
+            if item.get("status") == "pendente":
+                item["status"] = "postando"
+                item["atualizado_em"] = datetime.now().isoformat()
+                salvar_fila(fila)
+                return item
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -708,6 +747,31 @@ def processar_fila(modo: str = "auto"):
     log("\n✅ Processamento da fila concluído.")
 
 
+def modo_watch(modo: str = "auto"):
+    """
+    PIPELINE CONCORRENTE: fica observando a fila e postando os vídeos assim que
+    ficam prontos, EM PARALELO com o processador (que edita o próximo vídeo).
+    Encerra quando o processamento sinaliza conclusão (STOP_FLAG) e não há mais
+    pendentes/em-postagem. Assim, enquanto um vídeo posta, o outro é processado.
+    """
+    log("👀 Poster em modo WATCH — postando conforme a fila enche (pipeline concorrente).")
+    while True:
+        item = reivindicar_proximo()
+        if item:
+            video_path = item["video_path"]
+            titulo = item.get("titulo", "")
+            caption = item.get("caption", "")
+            sucesso = postar_video(video_path, titulo, modo, caption)
+            marcar_fila_status(video_path, "publicado" if sucesso else "falhou")
+            time.sleep(POST_GAP)   # pausa curta anti-spam (o próximo já processa em paralelo)
+        else:
+            # Nada pendente agora
+            if STOP_FLAG.exists():
+                log("✅ Processamento concluído e fila drenada — encerrando o poster.")
+                break
+            time.sleep(3)   # aguarda o processador produzir o próximo
+
+
 # ─────────────────────────────────────────────
 #  ENTRY POINT
 # ─────────────────────────────────────────────
@@ -722,7 +786,9 @@ if __name__ == "__main__":
 
     parser.add_argument("--file", type=str, help="Caminho para um vídeo específico a ser postado")
     parser.add_argument("--titulo", type=str, default="", help="Título/legenda do vídeo")
-    parser.add_argument("--queue", action="store_true", help="Processa a fila de postagem completa")
+    parser.add_argument("--queue", action="store_true", help="Posta toda a fila de uma vez (modo serial)")
+    parser.add_argument("--watch", action="store_true",
+                        help="Fica postando conforme a fila enche (pipeline concorrente)")
 
     args = parser.parse_args()
 
@@ -734,7 +800,9 @@ if __name__ == "__main__":
     else:
         modo = "auto"
 
-    if args.queue:
+    if args.watch:
+        modo_watch(modo)
+    elif args.queue:
         processar_fila(modo)
     elif args.file:
         sucesso = postar_video(args.file, args.titulo, modo)

@@ -29,6 +29,8 @@ __pycache__/
 # Fila de postagem e artefatos de runtime do mirror-clips
 mirror_clips/fila_postagem.json
 mirror_clips/*.png
+mirror_clips/.fila.lock
+mirror_clips/.processamento_concluido
 
 # Clipes gerados pelo sistema principal
 cortes_gerados/

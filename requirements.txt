@@ -18,7 +18,8 @@ requests                   # chamadas HTTP (LLM/Ollama, TikTok API, diagnóstico
 yt-dlp                     # download de vídeos e shorts
 
 # --- IA / Transcrição (roteirizador + coletor do mirror) ---
-openai-whisper             # transcrição local (usa o torch)
+faster-whisper             # transcrição do mirror (CTranslate2: +rápido/preciso em CPU)
+openai-whisper             # usado pelo roteirizador e pela versão CLI do coletor
 torch==2.13.0+cpu          # backend do Whisper — versão CPU (sem CUDA)
 numpy                      # análise de frames (detecção da faixa da legenda)
 Pillow                     # leitura de frames para detectar a legenda original

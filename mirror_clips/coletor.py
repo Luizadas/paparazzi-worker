@@ -9,7 +9,6 @@ import yt_dlp
 from datetime import datetime
 import subprocess
 import shutil
-import whisper
 import numpy as np
 from PIL import Image
 from dotenv import load_dotenv, find_dotenv
@@ -28,6 +27,45 @@ DOWNLOAD_DIR = "/mnt/paparazzi/mirror_clips"
 # LLM local (Ollama) para gerar a legenda do post
 LLM_API_URL = os.getenv("LLM_API_URL", "http://localhost:11434/api/generate")
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-r1:latest")
+
+# Transcrição (faster-whisper): mais rápido/preciso que o openai-whisper em CPU.
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")   # tiny/base/small/medium/large-v3
+_FW_MODEL = None
+
+
+def _get_whisper():
+    """Carrega o modelo faster-whisper uma vez (CPU, int8)."""
+    global _FW_MODEL
+    if _FW_MODEL is None:
+        from faster_whisper import WhisperModel
+        print(f"🎙️  Carregando faster-whisper ({WHISPER_MODEL}, CPU/int8)...")
+        _FW_MODEL = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+    return _FW_MODEL
+
+
+def transcrever_audio(audio_path):
+    """
+    Transcreve o áudio com faster-whisper, forçando PT-BR e com filtros de
+    qualidade (VAD remove silêncios/alucinações; sem condicionar no texto
+    anterior evita repetições tipo 'na... na...'). Retorna (segmentos, texto),
+    onde cada segmento é {'words': [{'start','end','word'}], 'text'}.
+    """
+    model = _get_whisper()
+    segments, _info = model.transcribe(
+        audio_path,
+        language="pt",
+        word_timestamps=True,
+        vad_filter=True,
+        beam_size=5,
+        condition_on_previous_text=False,
+    )
+    segs, textos = [], []
+    for seg in segments:  # generator — consumir aqui dispara a transcrição
+        palavras = [{"start": w.start, "end": w.end, "word": w.word}
+                    for w in (seg.words or [])]
+        segs.append({"words": palavras, "text": seg.text})
+        textos.append(seg.text)
+    return segs, " ".join(textos).strip()
 
 
 def gerar_legenda_ia(texto_transcricao: str, titulo_original: str = "") -> str:
@@ -469,14 +507,12 @@ def processar_video_whisper_nativo(video_path):
 
     # Passo 2: Transcrever (timestamps por palavra), detectar a legenda original
     # (OCR) e gerar o ASS de 1 linha na posição certa.
-    print("Passo 2/3: Gerando legendas com Whisper (Nativo)...")
+    print(f"Passo 2/3: Transcrevendo com faster-whisper ({WHISPER_MODEL}, PT-BR)...")
     ass_path = os.path.join(base_dir, f"{base_name}.ass")
     texto_transcricao = ""
     leg = {"tem_legenda": False}
     try:
-        model = whisper.load_model("base")
-        result = model.transcribe(audio_path, fp16=False, word_timestamps=True)
-        texto_transcricao = (result.get("text") or "").strip()  # base para a legenda IA
+        segmentos, texto_transcricao = transcrever_audio(audio_path)
 
         W, H = _dimensoes_video(video_path)
 
@@ -490,7 +526,7 @@ def processar_video_whisper_nativo(video_path):
             centro_y = int(0.85 * H)  # sem legenda original → a nossa vai para baixo
             print("🎯 Sem legenda no original → nossa legenda irá para baixo (sem blur).")
 
-        n_cues, max_chars, fs = gerar_ass_legenda(result["segments"], ass_path, W, H, centro_y)
+        n_cues, max_chars, fs = gerar_ass_legenda(segmentos, ass_path, W, H, centro_y)
         print(f"📝 {n_cues} legendas de 1 linha geradas (máx {max_chars} chars).")
     except Exception as e:
         print(f"❌ Erro ao rodar whisper internamente: {e}")
