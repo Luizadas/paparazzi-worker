@@ -193,4 +193,5 @@ def buscar_shorts_virais_api():
 if __name__ == "__main__":
     configurar_banco(DB_FILE)
     verificar_canal_com_api(CHANNEL_ID)
-    buscar_shorts_virais_api()
+    # Busca global (copa/futebol) DESATIVADA: mantém o mirror focado no canal fixo.
+    # buscar_shorts_virais_api()

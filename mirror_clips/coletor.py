@@ -719,14 +719,20 @@ def processar_video_whisper_nativo(video_path):
                 pass
 
 
+def processar_url(url):
+    """Baixa e processa um vídeo. Reaproveita os modelos já carregados em memória
+    (faster-whisper / EasyOCR são cacheados no módulo) — chamado EM PROCESSO pelo
+    watcher para NÃO recarregar os modelos a cada vídeo.
+    Cada vídeo é transcrito de forma independente (condition_on_previous_text=False),
+    então NÃO há 'delírio'/contaminação entre vídeos."""
+    caminho = baixar_short(url)
+    if caminho:
+        processar_video_whisper_nativo(caminho)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        video_url = sys.argv[1]
-        caminho_baixado = baixar_short(video_url)
-        if caminho_baixado:
-            # Mantendo a chamada original ou a nova
-            # processar_video(caminho_baixado) # original via CLI
-            processar_video_whisper_nativo(caminho_baixado) # nova via biblioteca nativa
+        processar_url(sys.argv[1])
     else:
         print("ERRO: Nenhuma URL de vídeo fornecida.")
         print("Uso: python coletor.py 'URL_DO_SHORT'")

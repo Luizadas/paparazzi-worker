@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import isodate
 import subprocess
+import coletor   # processa EM PROCESSO (modelos carregados uma vez, reusados)
 from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
@@ -87,18 +88,15 @@ def verificar_performance_shorts():
                 print(f"📥 Disparando download e processamento para: {link}")
                 remover_short_da_lista(DB_FILE, video_id)
                 
-                # Chama o coletor e AGUARDA terminar (download + processamento + enfileira).
-                # Bloqueante de propósito: assim, quando o watcher termina, a fila de
-                # postagem já está pronta para o poster.py --queue.
+                # Processa EM PROCESSO (não via subprocess): os modelos pesados
+                # (faster-whisper medium + EasyOCR) ficam carregados em memória e
+                # são reusados entre os vídeos — sem recarregar a cada um.
+                # O poster.py --watch (processo separado) posta em paralelo, então
+                # enquanto este processa o próximo, o anterior já está sendo postado.
                 try:
-                    import sys, os
-                    script_dir = os.path.dirname(os.path.abspath(__file__))
-                    subprocess.run(
-                        [sys.executable, 'coletor.py', link],
-                        cwd=script_dir, check=False
-                    )
+                    coletor.processar_url(link)
                 except Exception as e:
-                    print(f"Erro ao disparar coletor.py: {e}")
+                    print(f"Erro ao processar {link}: {e}")
 
     print("Verificação da Watch List de Shorts concluída.")
 
