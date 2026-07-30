@@ -213,21 +213,11 @@ def detectar_legenda_ocr(video_path, n=16):
         y0 = max(0.0, y0 - 0.015); y1 = min(1.0, y1 + 0.015)
         cy = (y0 + y1) / 2
 
-        # Classifica barra vs blur: fração de pixels quase-pretos na banda
-        gy0, gy1 = int(y0 * H), int(y1 * H)
-        escuros = []
-        for p in paths:
-            g = np.asarray(Image.open(p).convert("L"), dtype=np.float32)
-            banda = g[gy0:gy1, :]
-            if banda.size:
-                escuros.append(float((banda < 45).mean()))
-        frac_escura = float(np.mean(escuros)) if escuros else 0.0
-        estilo = "barra" if frac_escura > 0.5 else "blur"
-
-        return {"tem_legenda": True, "estilo": estilo,
+        # Sempre BLUR (sem tarja): só devolvemos a caixa da legenda original.
+        return {"tem_legenda": True,
                 "x0": round(x0, 4), "x1": round(x1, 4),
                 "y0": round(y0, 4), "y1": round(y1, 4),
-                "cy": round(cy, 4), "frac_escura": round(frac_escura, 3)}
+                "cy": round(cy, 4)}
     except Exception as e:
         print(f"⚠️ Detecção OCR falhou ({e}); legenda irá para baixo, sem cobertura.")
         return {"tem_legenda": False}
@@ -287,7 +277,8 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=26):
         )
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write("\n".join(linhas))
-    return len(cues)
+    max_chars = max((len(t) for _, _, t in cues), default=0)
+    return len(cues), max_chars, fs
 
 
 def baixar_short(url):
@@ -459,14 +450,13 @@ def processar_video_whisper_nativo(video_path):
         leg = detectar_legenda_ocr(video_path)
         if leg.get("tem_legenda"):
             centro_y = int(leg["cy"] * H)
-            print(f"🎯 Legenda original em y~{int(leg['cy']*100)}% | estilo: "
-                  f"{leg['estilo']} (frac_escura={leg.get('frac_escura')})")
+            print(f"🎯 Legenda original em y~{int(leg['cy']*100)}% → blur nessa faixa.")
         else:
             centro_y = int(0.85 * H)  # sem legenda original → a nossa vai para baixo
-            print("🎯 Sem legenda no original → nossa legenda irá para baixo (sem cobertura).")
+            print("🎯 Sem legenda no original → nossa legenda irá para baixo (sem blur).")
 
-        n_cues = gerar_ass_legenda(result["segments"], ass_path, W, H, centro_y)
-        print(f"📝 {n_cues} legendas de 1 linha geradas.")
+        n_cues, max_chars, fs = gerar_ass_legenda(result["segments"], ass_path, W, H, centro_y)
+        print(f"📝 {n_cues} legendas de 1 linha geradas (máx {max_chars} chars).")
     except Exception as e:
         print(f"❌ Erro ao rodar whisper internamente: {e}")
         return
@@ -482,24 +472,33 @@ def processar_video_whisper_nativo(video_path):
         video_basename = os.path.basename(video_path)
         final_basename = os.path.basename(final_output)
 
-        if leg.get("tem_legenda") and leg["estilo"] == "barra":
-            # Original TEM barra → tarja preta de largura total na faixa detectada
-            gy = max(0, int(leg["y0"] * H)); gh = max(1, int((leg["y1"] - leg["y0"]) * H))
-            gh = min(gh, H - gy)
-            vf = f"hflip,drawbox=x=0:y={gy}:w=iw:h={gh}:color=black:t=fill,ass={ass_basename}"
-            ff_args = ["-vf", vf]
-            print(f"🎬 Cobertura: TARJA preta (y={gy}, h={gh}).")
-        elif leg.get("tem_legenda") and leg["estilo"] == "blur":
-            # Original SEM barra → blur só na caixa onde as palavras aparecem
-            bx = max(0, int(leg["x0"] * W)); bw = max(1, int((leg["x1"] - leg["x0"]) * W))
-            by = max(0, int(leg["y0"] * H)); bh = max(1, int((leg["y1"] - leg["y0"]) * H))
-            bw = min(bw, W - bx); bh = min(bh, H - by)
+        if leg.get("tem_legenda"):
+            # SEMPRE blur. A caixa do blur = união da legenda ORIGINAL (OCR) com a
+            # caixa da NOSSA legenda (centralizada), pra que a nossa fique
+            # ESTRITAMENTE em cima do blur. Blur forte.
+            ox0 = int(leg["x0"] * W); ox1 = int(leg["x1"] * W)
+            oy0 = int(leg["y0"] * H); oy1 = int(leg["y1"] * H)
+            # caixa estimada da nossa legenda (centralizada em W/2)
+            char_w = 0.55 * fs
+            sub_w = min(int(W * 0.94), int(max_chars * char_w) + int(0.05 * W))
+            sub_h = int(fs * 1.7)
+            sx = (W - sub_w) // 2
+            sy = centro_y - sub_h // 2
+            # união + margem
+            m = int(0.01 * W)
+            bx = max(0, min(ox0, sx) - m)
+            bx1 = min(W, max(ox1, sx + sub_w) + m)
+            by = max(0, min(oy0, sy) - m)
+            by1 = min(H, max(oy1, sy + sub_h) + m)
+            bw = max(1, bx1 - bx); bh = max(1, by1 - by)
+            # blur FORTE via gblur (Gaussian): sigma alto, sem limite de raio
+            sigma = max(16, min(bw, bh) // 5)
             fc = (f"[0:v]hflip,split=2[b][t];"
-                  f"[t]crop={bw}:{bh}:{bx}:{by},boxblur=18:2[bl];"
+                  f"[t]crop={bw}:{bh}:{bx}:{by},gblur=sigma={sigma}[bl];"
                   f"[b][bl]overlay={bx}:{by}[base];"
                   f"[base]ass={ass_basename}")
             ff_args = ["-filter_complex", fc]
-            print(f"🎬 Cobertura: BLUR na caixa (x={bx},y={by},w={bw},h={bh}).")
+            print(f"🎬 Cobertura: BLUR forte gblur (x={bx},y={by},w={bw},h={bh},sigma={sigma}).")
         else:
             # Sem legenda no original → só espelha; a nossa legenda vai embaixo
             ff_args = ["-vf", f"hflip,ass={ass_basename}"]
