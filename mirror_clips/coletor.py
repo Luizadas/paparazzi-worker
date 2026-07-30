@@ -43,42 +43,35 @@ def gerar_legenda_ia(texto_transcricao: str, titulo_original: str = "") -> str:
 
     contexto_titulo = f"\nTÍTULO ORIGINAL DO VÍDEO: {titulo_original}\n" if titulo_original else ""
 
-    prompt = f"""Você é um especialista em crescimento e viralização no TikTok no Brasil,
-com anos escrevendo legendas que geram milhões de views.
+    # Prompt baseado em boas práticas de legenda viral no TikTok (2026):
+    # gancho curto na 1ª frase (o que aparece antes do "ver mais"), CTA para
+    # gerar comentários, 1-2 palavras-chave (SEO da busca) e 3-5 hashtags
+    # (amplas + de nicho). Legenda curtíssima e escaneável.
+    prompt = f"""Você é um especialista em viralização no TikTok no Brasil. Escreva a LEGENDA (descrição) de um post curto.
 
-Abaixo está a transcrição automática (Whisper) de um vídeo curto. Ela pode estar
-IMPERFEITA, com trechos soltos, repetições ou erros. Sua tarefa NÃO é resumir nem
-copiar a transcrição: é ENTENDER o tema/assunto geral e escrever uma legenda NOVA,
-coerente e chamativa para o post.
+A transcrição automática abaixo pode estar IMPERFEITA. NÃO copie nem resuma a transcrição — apenas ENTENDA o TEMA e escreva uma legenda NOVA e original.
 
-Aplique as melhores práticas de viralização no TikTok:
-- GANCHO forte no início: curiosidade, choque, polêmica ou identificação imediata.
-- CURIOSITY GAP: insinue algo sem entregar tudo, pra prender até o fim.
-- Gatilhos emocionais (surpresa, humor, indignação, inspiração) e linguagem coloquial BR.
-- CTA sutil quando fizer sentido ("marca alguém", "concorda?", "comenta aí").
-- Termine com 4 a 6 HASHTAGS de alto alcance (misture amplas como #fyp #viral #foryou
-  com específicas do tema).
+Estrutura da legenda (siga à risca):
+1) GANCHO forte e CURTO na primeira frase (ideal 20-60 caracteres): curiosidade, opinião polêmica, choque ou promessa de valor. É o que aparece antes do "ver mais".
+2) (opcional) uma CTA curta pra gerar comentários: "comenta aí", "concorda?", "marca alguém".
+3) 3 a 5 HASHTAGS no fim: misture amplas (#fyp #viral #foryou) com 1-2 específicas do tema.
 
-Regras de saída (OBRIGATÓRIAS):
-- É PROIBIDO copiar ou parafrasear frases soltas da transcrição. Escreva algo próprio,
-  fluido e que faça sentido sozinho. Se a transcrição estiver confusa, capte só o TEMA
-  geral (ex: treino, futebol, humor, entrevista) e escreva sobre ele.
-- Escreva EXCLUSIVAMENTE em PORTUGUÊS DO BRASIL, com frases completas e coerentes.
-- NÃO use caracteres chineses, japoneses, coreanos, russos ou de outro idioma.
-- Legenda curta e escaneável (idealmente até 150 caracteres antes das hashtags).
-- Pode usar 1 ou 2 emojis se combinar.
-- Responda APENAS com a legenda final (texto + hashtags) em UMA linha. Sem aspas,
-  sem títulos, sem explicações, sem "Legenda:".
+Regras:
+- Curtíssima e escaneável: fora as hashtags, no máximo ~150 caracteres.
+- Português do Brasil, tom coloquial e natural. No máximo 1-2 emojis.
+- Inclua 1-2 palavras-chave do tema (ajuda na busca do TikTok).
+- PROIBIDO: copiar/resumir a transcrição, textão, caracteres de outro idioma (chinês etc.), aspas, "Legenda:".
+- Responda SÓ com a legenda final (gancho + hashtags), em UMA linha.
 {contexto_titulo}
 --- TRANSCRIÇÃO (pode estar imperfeita) ---
-{texto[:2500]}
+{texto[:2000]}
 """
 
     payload = {
         "model": LLM_MODEL,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 200},
+        "options": {"temperature": 0.8, "num_predict": 120},
     }
     try:
         print("🧠 Gerando legenda com IA (LLM)...")
@@ -86,7 +79,7 @@ Regras de saída (OBRIGATÓRIAS):
         resp.raise_for_status()
         saida = resp.json().get("response", "") or ""
 
-        legenda = _sanitizar_legenda(saida)
+        legenda = _pos_processar_legenda(_sanitizar_legenda(saida))
         if legenda:
             print(f"✅ Legenda IA: {legenda}")
         return legenda[:2200]
@@ -115,6 +108,41 @@ def _sanitizar_legenda(saida: str) -> str:
     # Colapsa espaços múltiplos criados pela remoção de caracteres
     legenda = re.sub(r"\s{2,}", " ", legenda).strip()
     return legenda
+
+
+def _pos_processar_legenda(legenda: str) -> str:
+    """Aplica as boas práticas de legenda viral de forma determinística:
+    - separa gancho (texto) das hashtags;
+    - encurta o gancho (~150 chars, sem cortar no meio da palavra);
+    - garante de 3 a 5 hashtags (amplas + de nicho), sem duplicar.
+    """
+    if not legenda:
+        return ""
+    tokens = legenda.split()
+    hashtags, texto_toks = [], []
+    for t in tokens:
+        (hashtags if t.startswith("#") and len(t) > 1 else texto_toks).append(t)
+    texto = " ".join(texto_toks).strip(" -–—:")
+
+    # Gancho curto (best practice: primeira linha curtíssima)
+    if len(texto) > 150:
+        texto = texto[:150].rsplit(" ", 1)[0].rstrip(",;.") + "…"
+
+    # Dedup de hashtags preservando ordem
+    vistos, hs = set(), []
+    for h in hashtags:
+        hl = h.lower()
+        if hl not in vistos:
+            vistos.add(hl); hs.append(h)
+    # Garante hashtags amplas e limita a 5 (3-5 é o recomendado)
+    for base in ("#fyp", "#viral", "#foryou"):
+        if len(hs) >= 5:
+            break
+        if base not in vistos:
+            vistos.add(base); hs.append(base)
+    hs = hs[:5]
+
+    return (f"{texto} {' '.join(hs)}").strip()
 
 # ─────────────────────────────────────────────
 #  LEGENDA: detecção da faixa original + geração do ASS (1 linha)
