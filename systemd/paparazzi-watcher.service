@@ -1,0 +1,18 @@
+[Unit]
+Description=Paparazzi Watcher (produz videos do mirror)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luiz
+WorkingDirectory=/home/luiz/github/paparazzi-worker/painel
+ExecStart=/home/luiz/github/paparazzi-worker/venv/bin/python manage.py rodar_watcher
+# Parada graciosa: SIGTERM pede parada; o watcher so encerra ENTRE videos.
+# TimeoutStopSec da tempo do video em processamento terminar antes do kill.
+KillSignal=SIGTERM
+TimeoutStopSec=1200
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

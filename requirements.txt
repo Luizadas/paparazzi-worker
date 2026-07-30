@@ -33,3 +33,8 @@ webdriver-manager          # baixa/gerencia o chromedriver
 
 # --- Detecção no Twitter/X (experimental) ---
 tweepy                     # API do Twitter/X
+
+# --- Painel de Controle (Django) + Postgres ---
+Django==4.2.*              # painel local (dashboard + admin) e ORM único
+dj-database-url            # lê DATABASE_URL do .env
+psycopg2-binary            # driver Postgres

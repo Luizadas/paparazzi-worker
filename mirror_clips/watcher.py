@@ -40,9 +40,12 @@ def remover_short_da_lista(db_path, video_id):
     conn.commit()
     conn.close()
 
-def verificar_performance_shorts():
+def verificar_performance_shorts(deve_parar=lambda: False):
+    """Uma passada pela watch list. `deve_parar` é checado ENTRE vídeos: quando
+    retorna True, encerra sem começar um novo vídeo (o que já está processando
+    termina normalmente) — base da parada graciosa do daemon."""
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando verificação de Shorts na Watch List...")
-    
+
     shorts_para_verificar = obter_shorts_para_verificar(DB_FILE)
     if not shorts_para_verificar:
         print("Watch List está vazia. Nenhum Short em observação.")
@@ -68,8 +71,11 @@ def verificar_performance_shorts():
     stats_map = {item['id']: item['statistics'] for item in video_details_response.get('items', [])}
 
     for video in shorts_para_verificar:
+        if deve_parar():
+            print("🛑 Parada solicitada — encerrando após o vídeo atual (nenhum novo será iniciado).")
+            return
         video_id = video['video_id']
-        
+
         published_at_str = video['published_at']
         published_at = isodate.parse_datetime(published_at_str)
 
@@ -100,5 +106,28 @@ def verificar_performance_shorts():
 
     print("Verificação da Watch List de Shorts concluída.")
 
+
+def rodar_daemon(intervalo=300, deve_parar=lambda: False):
+    """Loop contínuo do watcher (usado como serviço systemd). A cada ciclo faz uma
+    passada; entre ciclos dorme `intervalo` s, checando `deve_parar` em pequenos
+    intervalos para responder rápido a um pedido de desligamento."""
+    import time
+    print(f"👀 Watcher em modo daemon (intervalo {intervalo}s). Ctrl+C/stop para sair.")
+    while not deve_parar():
+        try:
+            verificar_performance_shorts(deve_parar)
+        except Exception as e:
+            print(f"Erro no ciclo do watcher: {e}")
+        for _ in range(int(intervalo)):
+            if deve_parar():
+                break
+            time.sleep(1)
+    print("👋 Watcher daemon encerrado.")
+
+
 if __name__ == "__main__":
-    verificar_performance_shorts()
+    import sys
+    if "--daemon" in sys.argv:
+        rodar_daemon()
+    else:
+        verificar_performance_shorts()

@@ -1,0 +1,10 @@
+[Unit]
+Description=Roda a retencao do Paparazzi de hora em hora
+
+[Timer]
+# A cada hora verifica se ha videos postados ha mais de 24h para apagar o arquivo.
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

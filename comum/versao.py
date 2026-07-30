@@ -1,0 +1,68 @@
+# versao.py — versão do sistema + rastreio de processamento (provenance)
+#
+# Objetivo: sempre que um vídeo é processado, gravamos o NOME do vídeo e em QUAL
+# VERSÃO do sistema ele rodou. Assim conseguimos saber se um vídeo foi gerado
+# ANTES ou DEPOIS de uma mudança na lógica (ex.: a correção da tarja full-width)
+# e reprocessar só o que precisa. Registro local em JSONL (append-only); depois
+# esses dados migram para o Postgres de controle.
+
+import os
+import json
+import re
+from datetime import datetime
+
+# Bump a cada mudança relevante na LÓGICA de processamento (não em bug trivial).
+SISTEMA_VERSAO = "1.2.0"
+
+# Histórico curto — o que mudou em cada versão da lógica de processamento.
+CHANGELOG = {
+    "1.0.0": "Mirror base: blur localizado por OCR, meme no topo, whisper medium.",
+    "1.1.0": "Legenda 1 linha, fonte adaptativa, blur sempre (sem tarja preta).",
+    "1.2.0": "Detecta tarja preta full-width e faz blur de ponta a ponta (altura real).",
+}
+
+# Onde gravamos o log de proveniência (append-only).
+_RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_PROCESSAMENTOS = os.path.join(_RAIZ, "data", "processamentos.jsonl")
+
+
+def extrair_video_id(nome_arquivo):
+    """Extrai o ID do YouTube do nome do arquivo, removendo o sufixo _AAAAMMDD_HHMMSS
+    (o ID pode conter '_' e '-', ex.: 'uBrSJIMM-_g')."""
+    base = os.path.splitext(os.path.basename(nome_arquivo))[0]
+    return re.sub(r"_\d{8}_\d{6}.*$", "", base)
+
+
+def registrar_processamento(nome_arquivo, deteccao=None, saida=None, extra=None):
+    """Grava uma linha de proveniência do processamento. Best-effort: nunca
+    interrompe o pipeline se falhar.
+
+    nome_arquivo: caminho/nome do vídeo processado.
+    deteccao:     dict com o resultado do OCR (tem_legenda, faixa_total, cy, meme...).
+    saida:        caminho do vídeo final gerado.
+    extra:        dict com campos adicionais (n_cues, fs, etc.).
+    """
+    try:
+        base = os.path.splitext(os.path.basename(nome_arquivo))[0]
+        deteccao = deteccao or {}
+        meme = deteccao.get("meme") if isinstance(deteccao, dict) else None
+        registro = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "versao": SISTEMA_VERSAO,
+            "video_id": extrair_video_id(nome_arquivo),
+            "nome": base,
+            "tem_legenda": bool(deteccao.get("tem_legenda")),
+            "faixa_total": bool(deteccao.get("faixa_total")),
+            "cy": deteccao.get("cy"),
+            "meme": (meme or {}).get("texto") if isinstance(meme, dict) else None,
+            "saida": saida,
+        }
+        if extra:
+            registro.update(extra)
+        os.makedirs(os.path.dirname(LOG_PROCESSAMENTOS), exist_ok=True)
+        with open(LOG_PROCESSAMENTOS, "a", encoding="utf-8") as f:
+            f.write(json.dumps(registro, ensure_ascii=False) + "\n")
+        return registro
+    except Exception as e:
+        print(f"⚠️  Falha ao registrar proveniência (ignorado): {e}")
+        return None

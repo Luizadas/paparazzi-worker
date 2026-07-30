@@ -1,0 +1,8 @@
+[Unit]
+Description=Paparazzi Retencao (apaga arquivos de video > 24h, mantem metadados)
+
+[Service]
+Type=oneshot
+User=luiz
+WorkingDirectory=/home/luiz/github/paparazzi-worker/painel
+ExecStart=/home/luiz/github/paparazzi-worker/venv/bin/python manage.py aplicar_retencao

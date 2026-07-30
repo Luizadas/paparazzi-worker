@@ -41,3 +41,8 @@ comum/experimentais/*.png
 # Ambiente virtual Python
 venv/
 .venv/
+
+# Log de proveniência (runtime)
+data/processamentos.jsonl
+
+painel/db.sqlite3

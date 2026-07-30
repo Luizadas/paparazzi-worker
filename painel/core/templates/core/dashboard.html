@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paparazzi — Painel de Controle</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 0; background:#0f1115; color:#e6e6e6; }
+    header { padding:16px 24px; background:#161a22; border-bottom:1px solid #262b36;
+             display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+    h1 { font-size:18px; margin:0; }
+    main { padding:24px; max-width:1100px; margin:0 auto; }
+    .card { background:#161a22; border:1px solid #262b36; border-radius:10px; padding:16px 20px; margin-bottom:20px; }
+    .row { display:flex; gap:16px; flex-wrap:wrap; align-items:center; }
+    .badge { padding:2px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+    .on { background:#11361f; color:#4ade80; } .off { background:#3a1519; color:#f87171; }
+    button, .btn { border:0; border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; }
+    .btn-on { background:#16a34a; color:#fff; } .btn-off { background:#dc2626; color:#fff; }
+    .btn-sm { padding:4px 10px; font-size:12px; background:#374151; color:#fff; }
+    input { background:#0f1115; border:1px solid #374151; color:#e6e6e6; padding:8px 10px; border-radius:8px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #262b36; }
+    th { color:#9aa4b2; font-weight:600; }
+    .msg { padding:10px 14px; border-radius:8px; margin-bottom:10px; background:#1f2937; }
+    a { color:#60a5fa; }
+    .muted { color:#9aa4b2; font-size:12px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>🎬 Paparazzi — Painel de Controle</h1>
+  <div class="row">
+    {% if status.ligado %}
+      <span class="badge on">Watcher LIGADO</span>
+      <form method="post" action="{% url 'watcher_desligar' %}">{% csrf_token %}
+        <button class="btn-off">Desligar watcher</button></form>
+    {% else %}
+      <span class="badge off">Watcher DESLIGADO</span>
+      <form method="post" action="{% url 'watcher_ligar' %}">{% csrf_token %}
+        <button class="btn-on">Ligar watcher</button></form>
+    {% endif %}
+    <span class="badge {% if status.ollama_ligado %}on{% else %}off{% endif %}">
+      Ollama {% if status.ollama_ligado %}on{% else %}off{% endif %}</span>
+  </div>
+</header>
+
+<main>
+  {% if messages %}
+    {% for m in messages %}<div class="msg">{{ m }}</div>{% endfor %}
+  {% endif %}
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div>
+        <strong>Publicados nas últimas 24h:</strong> {{ n_publicados_24h }}
+        {% if status.parar_solicitado %}<span class="muted">· parada solicitada</span>{% endif %}
+      </div>
+      <a href="/admin/" class="btn btn-sm">Abrir Django Admin</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Canais</h3>
+    <table>
+      <tr><th>Nome</th><th>YouTube ID</th><th>Ativo</th><th>Min views</th><th></th></tr>
+      {% for c in canais %}
+      <tr>
+        <td>{{ c.nome|default:"—" }}</td>
+        <td>{{ c.youtube_id }}</td>
+        <td>{% if c.ativo %}✅{% else %}⛔{% endif %}</td>
+        <td>{{ c.min_views }}</td>
+        <td>
+          <form method="post" action="{% url 'canal_remover' c.id %}"
+                onsubmit="return confirm('Remover {{ c.nome|default:c.youtube_id }}?')">
+            {% csrf_token %}<button class="btn-sm">Remover</button></form>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="muted">Nenhum canal cadastrado.</td></tr>
+      {% endfor %}
+    </table>
+    <form method="post" action="{% url 'canal_adicionar' %}" class="row" style="margin-top:12px">
+      {% csrf_token %}
+      <input name="youtube_id" placeholder="ID do canal (UC...)" required>
+      <input name="nome" placeholder="Nome (opcional)">
+      <button class="btn-sm" style="background:#2563eb">Adicionar canal</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Vídeos (últimas 24h)</h3>
+    <table>
+      <tr><th>Vídeo</th><th>Canal</th><th>Status</th><th>Versão</th>
+          <th>Tarja full</th><th>Arquivo</th><th>Post</th></tr>
+      {% for v in videos %}
+      <tr>
+        <td>{{ v.video_id }}</td>
+        <td>{{ v.canal.nome|default:"—" }}</td>
+        <td>{{ v.get_status_display }}</td>
+        <td>{{ v.versao_sistema|default:"—" }}</td>
+        <td>{% if v.deteccao.faixa_total %}↔️{% else %}—{% endif %}</td>
+        <td>{% if v.arquivo_removido %}<span class="muted">removido</span>{% else %}✅{% endif %}</td>
+        <td>
+          {% for p in v.posts.all %}{{ p.get_status_display }}
+            {% if p.url_publicada %}<a href="{{ p.url_publicada }}">↗</a>{% endif %}{% endfor %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="muted">Nenhum vídeo nas últimas 24h.</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</main>
+</body>
+</html>

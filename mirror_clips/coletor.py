@@ -15,6 +15,10 @@ from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
 
+# Raiz do repo no path para importar 'comum'
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from comum.versao import SISTEMA_VERSAO, registrar_processamento
+
 # Integração com módulo de postagem
 try:
     from poster import adicionar_na_fila
@@ -279,6 +283,66 @@ def _detectar_meme_topo(caixas_topo, n_frames):
     }
 
 
+def _detectar_tarja_fullwidth(paths, y0f, y1f):
+    """
+    Procura, atrás da legenda original, uma TARJA PRETA sólida que atravessa a tela
+    de ponta a ponta (lateral a lateral).
+
+    Método robusto a texto vazado nas pontas: uma LINHA pertence à tarja quando
+    >=75% da sua largura é quase-preta (o texto branco/colorido ocupa só uma fração
+    da linha). Um bloco contíguo dessas linhas, persistente entre frames e sobrepondo
+    a banda da legenda, É a tarja. Retorna a altura real (ytopo, ybase) em frações
+    0..1 — para o blur cobrir de x=0 a x=W exatamente nessa altura — ou None.
+    """
+    contagem = None   # por linha: em quantos frames aquela linha é "linha de tarja"
+    Href = None
+    nframes = 0
+    for p in paths:
+        try:
+            g = np.asarray(Image.open(p).convert("L"))
+        except Exception:
+            continue
+        H, W = g.shape[:2]
+        if W < 10:
+            continue
+        if Href is None:
+            Href = H
+            contagem = np.zeros(H, dtype=int)
+        if H != Href:
+            continue
+        dark_frac = (g < 50).mean(axis=1)          # fração escura de cada linha
+        contagem += (dark_frac >= 0.75).astype(int)
+        nframes += 1
+    if not nframes or Href is None:
+        return None
+
+    bar = contagem >= max(2, int(0.5 * nframes))    # linha de tarja na maioria dos frames
+    if not bar.any():
+        return None
+
+    # limita à janela ao redor da legenda (evita barras pretas de UI/rodapé alheias)
+    ytop_lim = max(0, int((y0f - 0.12) * Href))
+    ybot_lim = min(Href, int((y1f + 0.12) * Href))
+    idx = np.where(bar)[0]
+    idx = idx[(idx >= ytop_lim) & (idx < ybot_lim)]
+    if idx.size == 0:
+        return None
+
+    # maior bloco contíguo (tolera buracos de até 2 px) que sobreponha a legenda
+    grupos = np.split(idx, np.where(np.diff(idx) > 2)[0] + 1)
+    ya = y0f * Href; yb = y1f * Href
+    melhor, melhor_ov = None, -1
+    for gpo in grupos:
+        top, base = int(gpo[0]), int(gpo[-1])
+        ov = min(base, yb) - max(top, ya)          # sobreposição com a banda da legenda
+        if ov > melhor_ov:
+            melhor, melhor_ov = (top, base), ov
+    if melhor is None or (melhor[1] - melhor[0]) < 4:
+        return None
+    top, base = melhor
+    return (top / Href, (base + 1) / Href)
+
+
 def detectar_legenda_ocr(video_path, n=16):
     """
     Detecta via OCR a legenda QUEIMADA do vídeo ORIGINAL (antes do espelhamento):
@@ -351,13 +415,20 @@ def detectar_legenda_ocr(video_path, n=16):
         y1 = max(b[3] for b in melhor)
         x0 = max(0.0, x0 - 0.02); x1 = min(1.0, x1 + 0.02)
         y0 = max(0.0, y0 - 0.015); y1 = min(1.0, y1 + 0.015)
+        # Se atrás da legenda houver uma TARJA PRETA que atravessa a tela de ponta
+        # a ponta, o blur cobre a largura toda; usa a ALTURA REAL da tarja (não só a
+        # do texto), pra não vazar as bordas da legenda original.
+        tarja = _detectar_tarja_fullwidth(paths, y0, y1)
+        faixa_total = tarja is not None
+        if tarja:
+            y0 = min(y0, tarja[0]); y1 = max(y1, tarja[1])
         cy = (y0 + y1) / 2
 
         # Sempre BLUR (sem tarja) na legenda; 'meme' preserva a frase do topo.
         return {"tem_legenda": True,
                 "x0": round(x0, 4), "x1": round(x1, 4),
                 "y0": round(y0, 4), "y1": round(y1, 4),
-                "cy": round(cy, 4), "meme": meme}
+                "cy": round(cy, 4), "faixa_total": faixa_total, "meme": meme}
     except Exception as e:
         print(f"⚠️ Detecção OCR falhou ({e}); legenda irá para baixo, sem cobertura.")
         return {"tem_legenda": False}
@@ -486,111 +557,9 @@ def baixar_short(url):
         print(f"❌ ERRO ao tentar baixar o vídeo. Motivo: {e}")
         return None
 
-def processar_video(video_path):
-    print(f"\n⚙️ Iniciando processamento de: {video_path}")
-    base_dir = os.path.dirname(video_path)
-    base_name = os.path.splitext(os.path.basename(video_path))[0]
-    
-    srt_path = os.path.join(base_dir, f"{base_name}.srt")
-    audio_path = os.path.join(base_dir, f"{base_name}_audio.wav")
-    final_output = os.path.join(base_dir, f"{base_name}_final.mp4")
-
-    # Passo 1: Extrair áudio para o Whisper
-    print("Passo 1/3: Extraindo áudio para transcrição...")
-    try:
-        subprocess.run([
-            "ffmpeg", "-i", video_path, "-vn", "-acodec", "pcm_s16le",
-            "-ar", "16000", "-ac", "1", audio_path, "-y"
-        ], check=True, capture_output=True)
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Erro ao extrair áudio: {e.stderr.decode('utf-8', errors='ignore')}")
-        return
-
-    # Passo 2: Gerar Legendas (SRT) usando o CLI do Whisper
-    print("Passo 2/3: Gerando legendas com Whisper...")
-    try:
-        # Chama o whisper localmente pedindo formato SRT
-        subprocess.run([
-            "whisper", audio_path, "--model", "base", "--output_format", "srt", "--output_dir", base_dir
-        ], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Erro ao rodar whisper: {e}")
-        return
-    except FileNotFoundError:
-        print("❌ Whisper não encontrado no PATH. Certifique-se de que está instalado.")
-        return
-
-    # Verificar se o srt foi gerado. O whisper pode salvar como .wav.srt dependendo de como é chamado, ou com o mesmo nome do áudio.
-    whisper_srt_output = os.path.join(base_dir, f"{base_name}_audio.srt")
-    if os.path.exists(whisper_srt_output):
-        os.rename(whisper_srt_output, srt_path)
-    elif not os.path.exists(srt_path):
-        print("❌ Arquivo de legenda não encontrado após a execução do Whisper.")
-        return
-
-    # Extrai o texto do SRT para servir de base à legenda gerada por IA
-    texto_transcricao = ""
-    try:
-        with open(srt_path, encoding="utf-8") as f:
-            linhas = [l.strip() for l in f
-                      if l.strip() and not l.strip().isdigit() and "-->" not in l]
-        texto_transcricao = " ".join(linhas)
-    except Exception:
-        pass
-
-    # Passo 3: Espelhar o vídeo e queimar as legendas
-    print("Passo 3/3: Espelhando o vídeo e adicionando legendas...")
-    
-    # É preciso formatar o caminho do SRT para o FFmpeg (escapar caminhos absolutos no windows/linux)
-    # FFmpeg subtitles filter tem uma sintaxe chata para caminhos absolutos, então vamos rodar no mesmo diretório
-    try:
-        srt_basename = os.path.basename(srt_path)
-        video_basename = os.path.basename(video_path)
-        final_basename = os.path.basename(final_output)
-
-        # Filtro: hflip para espelhar, subtitles para legendar. 
-        # Configuração básica de fonte para ficar visível (amarelo com borda)
-        # Legenda: texto branco, menor, com FAIXA PRETA atrás (BorderStyle=3),
-        # centralizada no MEIO do vídeo (Alignment=5) para cobrir a legenda
-        # original espelhada. Cores em ASS: &HAABBGGRR (AA=00 => opaco).
-        estilo_legenda = (
-            "FontName=Arial,FontSize=14,Bold=1,"
-            "PrimaryColour=&H00FFFFFF,"      # texto branco
-            "OutlineColour=&H00000000,"      # faixa preta (BorderStyle=3)
-            "BorderStyle=3,Outline=4,Shadow=0,"
-            "Alignment=10"
-        )
-        # Tarja preta de largura total na altura da legenda original (que fica
-        # espelhada pelo hflip), cobrindo-a 100%; a legenda branca fica por cima.
-        tarja = "drawbox=x=0:y=ih*0.43:w=iw:h=ih*0.14:color=black:t=fill"
-        vf_filter = f"hflip,{tarja},subtitles={srt_basename}:force_style='{estilo_legenda}'"
-
-        subprocess.run([
-            "ffmpeg", "-i", video_basename, "-vf", vf_filter, 
-            "-c:a", "copy", final_basename, "-y"
-        ], cwd=base_dir, check=True, capture_output=True)
-        print(f"✅ Processamento concluído! Vídeo final salvo em: {final_output}")
-
-        # Enfileira para postagem automática (com legenda gerada por IA)
-        if POSTER_DISPONIVEL and os.path.exists(final_output):
-            titulo = base_name.replace("_", " ")
-            legenda_ia = gerar_legenda_ia(texto_transcricao, titulo_original="")
-            adicionar_na_fila(final_output, titulo, caption=legenda_ia)
-
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Erro ao processar FFmpeg final: {e.stderr.decode('utf-8', errors='ignore')}")
-
-    # Limpeza
-    for temp_file in [audio_path, srt_path, video_path]:
-        if os.path.exists(temp_file):
-            try:
-                os.remove(temp_file)
-            except:
-                pass
-
 
 def processar_video_whisper_nativo(video_path):
-    print(f"\n⚙️ Iniciando processamento de: {video_path}")
+    print(f"\n⚙️ Iniciando processamento de: {video_path} (sistema v{SISTEMA_VERSAO})")
     base_dir = os.path.dirname(video_path)
     base_name = os.path.splitext(os.path.basename(video_path))[0]
     
@@ -667,6 +636,11 @@ def processar_video_whisper_nativo(video_path):
             m = int(0.01 * W)
             bx = max(0, min(ox0, sx) - m); bx1 = min(W, max(ox1, sx + sub_w) + m)
             by = max(0, min(oy0, sy) - m); by1 = min(H, max(oy1, sy + sub_h) + m)
+            if leg.get("faixa_total"):
+                # Tarja preta original atravessa a tela → blur de ponta a ponta,
+                # mantendo a altura da faixa (só a largura muda).
+                bx = 0; bx1 = W
+                print("   ↔️ Tarja original de ponta a ponta → blur na largura total.")
             blur_boxes.append((bx, by, max(1, bx1 - bx), max(1, by1 - by)))
         if meme:
             mx = int(meme["x0"] * W); mx1 = int(meme["x1"] * W)
@@ -700,6 +674,12 @@ def processar_video_whisper_nativo(video_path):
             ["ffmpeg", "-i", video_basename, *ff_args, "-c:a", "copy", final_basename, "-y"],
             cwd=base_dir, check=True, capture_output=True)
         print(f"✅ Processamento concluído! Vídeo final salvo em: {final_output}")
+
+        # Proveniência: grava nome + versão do sistema + o que foi detectado,
+        # para sabermos se este vídeo saiu antes ou depois de cada mudança.
+        registrar_processamento(
+            video_path, deteccao=leg, saida=final_output,
+            extra={"n_cues": n_cues, "fs": fs, "cobertura": len(blur_boxes)})
 
         # Enfileira para postagem automática (com legenda gerada por IA)
         if POSTER_DISPONIVEL and os.path.exists(final_output):
