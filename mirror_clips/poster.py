@@ -23,6 +23,9 @@ from dotenv import load_dotenv, find_dotenv
 # Carrega as variáveis do .env único na raiz do projeto
 load_dotenv(find_dotenv())
 
+# Raiz do repo no path para importar 'comum' (ponte com o banco de controle)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 # ─────────────────────────────────────────────
 #  CONFIGURAÇÕES (via .env)
 # ─────────────────────────────────────────────
@@ -122,6 +125,12 @@ def marcar_fila_status(video_path: str, status: str):
                 item["status"] = status
                 item["atualizado_em"] = datetime.now().isoformat()
         salvar_fila(fila)
+    # Espelha no banco de controle (best-effort).
+    try:
+        from comum import db_bridge
+        db_bridge.marcar_post_status(str(video_path), status)
+    except Exception:
+        pass
 
 def reivindicar_proximo():
     """Pega ATOMICAMENTE o próximo item 'pendente', marca 'postando' e o retorna
@@ -755,21 +764,35 @@ def modo_watch(modo: str = "auto"):
     pendentes/em-postagem. Assim, enquanto um vídeo posta, o outro é processado.
     """
     log("👀 Poster em modo WATCH — postando conforme a fila enche (pipeline concorrente).")
-    while True:
-        item = reivindicar_proximo()
-        if item:
-            video_path = item["video_path"]
-            titulo = item.get("titulo", "")
-            caption = item.get("caption", "")
-            sucesso = postar_video(video_path, titulo, modo, caption)
-            marcar_fila_status(video_path, "publicado" if sucesso else "falhou")
-            time.sleep(POST_GAP)   # pausa curta anti-spam (o próximo já processa em paralelo)
-        else:
-            # Nada pendente agora
-            if STOP_FLAG.exists():
-                log("✅ Processamento concluído e fila drenada — encerrando o poster.")
-                break
-            time.sleep(3)   # aguarda o processador produzir o próximo
+    # Enquanto o poster está vivo, ele usa a LLM (caption). Registra como consumidor
+    # para o shutdown gracioso: o Ollama só encerra quando o poster também soltar.
+    try:
+        from comum import db_bridge
+        db_bridge.llm_adquirir("poster")
+    except Exception:
+        pass
+    try:
+        while True:
+            item = reivindicar_proximo()
+            if item:
+                video_path = item["video_path"]
+                titulo = item.get("titulo", "")
+                caption = item.get("caption", "")
+                sucesso = postar_video(video_path, titulo, modo, caption)
+                marcar_fila_status(video_path, "publicado" if sucesso else "falhou")
+                time.sleep(POST_GAP)   # pausa anti-spam (o próximo já processa em paralelo)
+            else:
+                # Nada pendente agora
+                if STOP_FLAG.exists():
+                    log("✅ Processamento concluído e fila drenada — encerrando o poster.")
+                    break
+                time.sleep(3)   # aguarda o processador produzir o próximo
+    finally:
+        try:
+            from comum import db_bridge
+            db_bridge.llm_liberar("poster")   # encerra Ollama se ninguém mais usa
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────

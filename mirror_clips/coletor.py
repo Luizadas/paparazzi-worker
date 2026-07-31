@@ -681,11 +681,25 @@ def processar_video_whisper_nativo(video_path):
             video_path, deteccao=leg, saida=final_output,
             extra={"n_cues": n_cues, "fs": fs, "cobertura": len(blur_boxes)})
 
+        # Espelha no banco de controle (Postgres) — best-effort, não bloqueia.
+        titulo = base_name.replace("_", " ")
+        try:
+            from comum import db_bridge
+            db_bridge.registrar_video_processado(
+                final_output, deteccao=leg, versao=SISTEMA_VERSAO, titulo=titulo)
+        except Exception as e:
+            print(f"⚠️  espelho no banco falhou (ignorado): {e}")
+
         # Enfileira para postagem automática (com legenda gerada por IA)
         if POSTER_DISPONIVEL and os.path.exists(final_output):
-            titulo = base_name.replace("_", " ")
             legenda_ia = gerar_legenda_ia(texto_transcricao, titulo_original="")
             adicionar_na_fila(final_output, titulo, caption=legenda_ia)
+            try:
+                from comum import db_bridge
+                db_bridge.registrar_post_pendente(
+                    final_output, caption=legenda_ia, versao=SISTEMA_VERSAO)
+            except Exception:
+                pass
 
     except subprocess.CalledProcessError as e:
         print(f"❌ Erro ao processar FFmpeg final: {e.stderr.decode('utf-8', errors='ignore')}")
