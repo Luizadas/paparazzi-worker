@@ -1,43 +1,43 @@
 """
-RetencaoService — política de retenção dos vídeos postados.
+RetencaoService — executa a política de retenção dos vídeos postados.
 
-Regra: passadas RETENCAO_HORAS (default 24h) da POSTAGEM, apaga o ARQUIVO local
-do vídeo (o _final.mp4). Os METADADOS e a CAPTION permanecem no banco para o
-controle no painel — nunca são apagados.
+A REGRA (quais vídeos expiraram após N horas) vive no Postgres, nas funções
+`fn_videos_expirados(p_horas)` e `fn_marcar_video_removido(p_id)` (migration
+0002_fn_retencao). Este serviço apenas ORQUESTRA: pergunta ao banco quem expirou,
+apaga o ARQUIVO em disco e chama a função de marcação. Metadados e caption ficam.
 """
 
-import os
-
 from django.conf import settings
-from django.utils import timezone
-from datetime import timedelta
+from django.db import connection
 
-from core.models import Video, Post
+import os
 
 
 class RetencaoService:
     def __init__(self, horas=None):
         self.horas = horas if horas is not None else settings.RETENCAO_HORAS
 
-    def _limite(self):
-        return timezone.now() - timedelta(hours=self.horas)
-
     def videos_expirados(self):
-        """Vídeos com post publicado há mais de N horas cujo arquivo ainda existe."""
-        limite = self._limite()
-        ids = (Post.objects
-               .filter(status=Post.Status.PUBLICADO, postado_em__lt=limite)
-               .values_list("video_id", flat=True))
-        return Video.objects.filter(id__in=list(ids), arquivo_removido=False)
+        """Consulta a REGRA no banco (função fn_videos_expirados).
+        Retorna lista de dicts: {id, video_id, arquivo_local}."""
+        with connection.cursor() as cur:
+            cur.execute("SELECT id, video_id, arquivo_local "
+                        "FROM fn_videos_expirados(%s)", [self.horas])
+            colunas = [c[0] for c in cur.description]
+            return [dict(zip(colunas, linha)) for linha in cur.fetchall()]
+
+    def _marcar_removido(self, video_pk):
+        with connection.cursor() as cur:
+            cur.execute("SELECT fn_marcar_video_removido(%s)", [video_pk])
 
     def aplicar(self, dry_run=False):
-        """Apaga os arquivos expirados. Retorna a lista de (video_id, resultado)."""
+        """Apaga os arquivos expirados e marca no banco. Retorna [(video_id, resultado)]."""
         resultados = []
-        for video in self.videos_expirados():
-            caminho = video.arquivo_local
+        for row in self.videos_expirados():
+            caminho = row["arquivo_local"]
             existe = bool(caminho) and os.path.exists(caminho)
             if dry_run:
-                resultados.append((video.video_id, "expira" if existe else "sem-arquivo"))
+                resultados.append((row["video_id"], "expira" if existe else "sem-arquivo"))
                 continue
             if existe:
                 try:
@@ -47,7 +47,6 @@ class RetencaoService:
                     resultado = f"erro:{e}"
             else:
                 resultado = "arquivo-ausente"
-            video.arquivo_removido = True          # metadados/caption ficam intactos
-            video.save(update_fields=["arquivo_removido", "atualizado_em"])
-            resultados.append((video.video_id, resultado))
+            self._marcar_removido(row["id"])       # metadados/caption ficam intactos
+            resultados.append((row["video_id"], resultado))
         return resultados
