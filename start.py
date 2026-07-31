@@ -245,10 +245,16 @@ def iniciar_mirror():
 
 def menu():
     while True:
-        print("""
+        url = f"http://{PAINEL_HOST}:{PAINEL_PORT}/"
+        no_ar = _porta_em_uso(PAINEL_HOST, PAINEL_PORT)
+        painel_linha = (f"🖥️  Painel: {url}  (admin: {url}admin/)"
+                        if no_ar else "🖥️  Painel: fora do ar (opção 5 para subir)")
+        print(f"""
 ==================================
         PAPARAZZI WORKER
 ==================================
+{painel_linha}
+----------------------------------
 1. Paparazzi  (gera vídeos novos via IA)
 2. Mirror     (espelha Shorts + posta no TikTok)
 3. Atualizar TikTok session_id
