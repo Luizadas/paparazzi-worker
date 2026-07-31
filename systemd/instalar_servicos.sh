@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Instala os serviços systemd do Paparazzi. Rode UMA vez com sudo:
+#     sudo bash systemd/instalar_servicos.sh
+set -euo pipefail
+
+REPO="/home/luiz/github/paparazzi-worker"
+USUARIO="luiz"
+
+echo "==> Copiando units para /etc/systemd/system/"
+cp "$REPO/systemd/paparazzi-watcher.service" \
+   "$REPO/systemd/paparazzi-retencao.service" \
+   "$REPO/systemd/paparazzi-retencao.timer" /etc/systemd/system/
+
+echo "==> systemctl daemon-reload"
+systemctl daemon-reload
+
+echo "==> Habilitando a retenção automática (timer horário)"
+systemctl enable --now paparazzi-retencao.timer
+
+echo "==> Watcher NÃO inicia no boot (quem liga/desliga é o painel)"
+systemctl disable paparazzi-watcher.service 2>/dev/null || true
+
+echo "==> Instalando regra polkit (painel controla watcher/ollama sem sudo)"
+cat > /etc/polkit-1/rules.d/49-paparazzi.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+  if (action.id == "org.freedesktop.systemd1.manage-units" &&
+      subject.user == "luiz") {
+    var unit = action.lookup("unit");
+    if (unit == "paparazzi-watcher.service" || unit == "ollama.service") {
+      return polkit.Result.YES;
+    }
+  }
+});
+EOF
+
+echo
+echo "==> Concluído. Estado atual:"
+systemctl list-unit-files 'paparazzi-*'
+echo
+systemctl list-timers paparazzi-retencao.timer --no-pager || true
+echo
+echo "Pronto! O painel já pode ligar/desligar o watcher, e a retenção roda de hora em hora."
