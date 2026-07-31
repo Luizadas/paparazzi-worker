@@ -19,6 +19,11 @@ ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
 REQ_FILE = ROOT / "requirements.txt"
 VENV_DIR = ROOT / "venv"
+PAINEL_DIR = ROOT / "painel"
+PAINEL_HOST = os.getenv("PAINEL_HOST", "127.0.0.1")
+PAINEL_PORT = int(os.getenv("PAINEL_PORT", "8000"))
+
+_painel_proc = None
 
 
 def _garantir_venv():
@@ -92,6 +97,58 @@ def _checar_ollama():
         pass
     print("⚠️  Ollama não respondeu em localhost:11434 (necessário p/ legenda por IA).")
     print("    Inicie o Ollama antes de rodar, se for usar a legenda gerada por IA.")
+
+
+# ─────────────────────────────────────────────
+#  Painel de Controle (Django) — sobe junto com o start
+# ─────────────────────────────────────────────
+
+def _porta_em_uso(host, port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
+def subir_painel():
+    """Sobe o painel de controle (Django) em segundo plano, sem travar o menu.
+    Se já houver algo escutando na porta, apenas informa a URL."""
+    global _painel_proc
+    manage = PAINEL_DIR / "manage.py"
+    url = f"http://{PAINEL_HOST}:{PAINEL_PORT}/"
+    if not manage.exists():
+        print("⚠️  Painel não encontrado (painel/manage.py). Pulando.")
+        return
+    if _porta_em_uso(PAINEL_HOST, PAINEL_PORT):
+        print(f"✅ Painel já está no ar: {url}")
+        return
+    log = PAINEL_DIR / "painel.log"
+    print(f"🖥️  Subindo o painel de controle... {url}")
+    _painel_proc = subprocess.Popen(
+        [sys.executable, "manage.py", "runserver", f"{PAINEL_HOST}:{PAINEL_PORT}", "--noreload"],
+        cwd=str(PAINEL_DIR),
+        stdout=open(log, "w"), stderr=subprocess.STDOUT,
+    )
+    # dá um instante e confirma
+    import time
+    for _ in range(10):
+        time.sleep(0.4)
+        if _porta_em_uso(PAINEL_HOST, PAINEL_PORT):
+            print(f"✅ Painel no ar: {url}  (admin: {url}admin/)")
+            return
+    print(f"⚠️  Painel pode não ter subido — confira {log}")
+
+
+def parar_painel():
+    global _painel_proc
+    if _painel_proc and _painel_proc.poll() is None:
+        print("🛑 Encerrando o painel...")
+        _painel_proc.terminate()
+        try:
+            _painel_proc.wait(timeout=5)
+        except Exception:
+            _painel_proc.kill()
+    _painel_proc = None
 
 
 # ─────────────────────────────────────────────
@@ -216,7 +273,10 @@ def menu():
 
 if __name__ == "__main__":
     _garantir_venv()
+    subir_painel()
     try:
         menu()
     except KeyboardInterrupt:
         print("\nAté mais! 👋")
+    finally:
+        parar_painel()
