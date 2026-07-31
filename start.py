@@ -253,6 +253,7 @@ def menu():
 2. Mirror     (espelha Shorts + posta no TikTok)
 3. Atualizar TikTok session_id
 4. Verificar/instalar dependências
+5. Subir painel de controle (front) — sem ativar nada
 0. Sair
 """)
         op = input("Escolha uma opção: ").strip()
@@ -264,6 +265,10 @@ def menu():
             atualizar_session_id()
         elif op == "4":
             subir_dependencias(forcar=True)
+        elif op == "5":
+            subir_painel()
+            print("\nℹ️  Painel no ar. Watcher/poster continuam DESLIGADOS — "
+                  "ligue-os pelo painel quando quiser.")
         elif op == "0":
             print("Até mais! 👋")
             break
