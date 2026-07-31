@@ -5,6 +5,7 @@ Três units controlam o pipeline:
 | Unit | Papel |
 |------|-------|
 | `paparazzi-watcher.service` | Roda o watcher (produz vídeos). Liga/desliga pelo painel. |
+| `paparazzi-poster.service` | Roda o poster (publica a fila). Liga/desliga pelo painel. |
 | `paparazzi-retencao.service` | Apaga arquivos de vídeo com mais de 24h (mantém metadados). |
 | `paparazzi-retencao.timer` | Dispara a retenção de hora em hora. |
 

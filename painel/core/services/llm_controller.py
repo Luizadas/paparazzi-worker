@@ -29,13 +29,17 @@ class LLMController:
         self.modelos = modelos or settings.OLLAMA_MODELOS
 
     # -- registro de consumidores -------------------------------------------
-    def adquirir(self, consumidor):
-        """Marca um consumidor como ativo e garante o Ollama ligado."""
+    def adquirir(self, consumidor, garantir=True):
+        """Marca um consumidor como ativo. Se garantir=True, também sobe o Ollama.
+        O poster usa garantir=False: ele publica captions já prontas e não precisa
+        acender o modelo só pra postar backlog — mas conta como consumidor para o
+        Ollama não ser desligado enquanto o poster ainda tem posts a fazer."""
         ConsumidorLLM.objects.update_or_create(
             nome=consumidor,
             defaults={"ativo": True, "heartbeat": timezone.now()},
         )
-        self.garantir_ligado()
+        if garantir:
+            self.garantir_ligado()
 
     def liberar(self, consumidor):
         """Marca o consumidor como ocioso; encerra o Ollama se ninguém mais usa."""
@@ -51,19 +55,33 @@ class LLMController:
     def ha_consumidores_ativos(self):
         return ConsumidorLLM.objects.filter(ativo=True).exists()
 
-    # -- controle do serviço Ollama -----------------------------------------
+    # -- controle do Ollama --------------------------------------------------
+    # "Ligado" aqui = há MODELO carregado em memória (é o que consome RAM). Parar
+    # o serviço inteiro é frágil (o `systemctl stop ollama` chega a dar timeout no
+    # DBus). Então liberamos RAM descarregando o modelo (`ollama stop`), mantendo o
+    # servidor de pé — o modelo recarrega sob demanda na próxima chamada.
+    def modelos_carregados(self):
+        try:
+            r = subprocess.run(["ollama", "ps"], capture_output=True, text=True, timeout=10)
+            linhas = [l for l in r.stdout.strip().splitlines()[1:] if l.strip()]
+            return [l.split()[0] for l in linhas]
+        except Exception:
+            return []
+
     def esta_ligado(self):
+        """True se algum modelo está carregado em memória (consumindo RAM)."""
+        return bool(self.modelos_carregados())
+
+    def servico_ativo(self):
         return systemd.esta_ativo(self.unit)
 
     def garantir_ligado(self):
-        if not self.esta_ligado():
+        """Garante o servidor Ollama de pé (o modelo carrega sob demanda)."""
+        if not systemd.esta_ativo(self.unit):
             systemd.iniciar(self.unit)
 
     def desligar(self):
-        """Descarrega os modelos da memória e para o serviço Ollama.
-        Primeiro tenta `ollama stop <modelo>` (libera RAM sem derrubar o serviço);
-        depois para o serviço systemd, que zera o uso de recursos."""
+        """Descarrega os modelos da memória (libera RAM), sem derrubar o serviço."""
         for modelo in self.modelos:
             subprocess.run(["ollama", "stop", modelo], check=False)
-        systemd.parar(self.unit)
         return True

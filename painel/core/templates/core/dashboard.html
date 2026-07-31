@@ -31,17 +31,15 @@
 <header>
   <h1>🎬 Paparazzi — Painel de Controle</h1>
   <div class="row">
-    {% if status.ligado %}
-      <span class="badge on">Watcher LIGADO</span>
-      <form method="post" action="{% url 'watcher_desligar' %}">{% csrf_token %}
-        <button class="btn-off">Desligar watcher</button></form>
+    {% if status.algo_ligado %}
+      <form method="post" action="{% url 'sistema_desligar' %}">{% csrf_token %}
+        <button class="btn-off" style="font-size:15px">⏻ Desligar tudo</button></form>
     {% else %}
-      <span class="badge off">Watcher DESLIGADO</span>
-      <form method="post" action="{% url 'watcher_ligar' %}">{% csrf_token %}
-        <button class="btn-on">Ligar watcher</button></form>
+      <form method="post" action="{% url 'sistema_ligar' %}">{% csrf_token %}
+        <button class="btn-on" style="font-size:15px">⏻ Ligar tudo</button></form>
     {% endif %}
     <span class="badge {% if status.ollama_ligado %}on{% else %}off{% endif %}">
-      Ollama {% if status.ollama_ligado %}on{% else %}off{% endif %}</span>
+      Ollama {% if status.ollama_ligado %}carregado{% else %}livre{% endif %}</span>
   </div>
 </header>
 
@@ -51,12 +49,46 @@
   {% endif %}
 
   <div class="card">
-    <div class="row" style="justify-content:space-between">
+    <h3>Serviços</h3>
+    <div class="row" style="gap:28px">
       <div>
-        <strong>Publicados nas últimas 24h:</strong> {{ n_publicados_24h }}
-        {% if status.parar_solicitado %}<span class="muted">· parada solicitada</span>{% endif %}
+        <div style="margin-bottom:6px">
+          <strong>Watcher</strong> (produz)
+          {% if status.watcher.desligando %}<span class="badge off">desligando…</span>
+          {% elif status.watcher.ligado %}<span class="badge on">LIGADO</span>
+          {% else %}<span class="badge off">desligado</span>{% endif %}
+        </div>
+        {% if status.watcher.ligado or status.watcher.desligando %}
+          <form method="post" action="{% url 'watcher_desligar' %}">{% csrf_token %}
+            <button class="btn-off">Desligar watcher</button></form>
+        {% else %}
+          <form method="post" action="{% url 'watcher_ligar' %}">{% csrf_token %}
+            <button class="btn-on">Ligar watcher</button></form>
+        {% endif %}
       </div>
-      <a href="/admin/" class="btn btn-sm">Abrir Django Admin</a>
+
+      <div>
+        <div style="margin-bottom:6px">
+          <strong>Poster</strong> (publica)
+          {% if status.poster.desligando %}<span class="badge off">desligando…</span>
+          {% elif status.poster.ligado %}<span class="badge on">LIGADO</span>
+          {% else %}<span class="badge off">desligado</span>{% endif %}
+        </div>
+        {% if status.poster.ligado or status.poster.desligando %}
+          <form method="post" action="{% url 'poster_desligar' %}">{% csrf_token %}
+            <button class="btn-off">Desligar poster</button></form>
+        {% else %}
+          <form method="post" action="{% url 'poster_ligar' %}">{% csrf_token %}
+            <button class="btn-on">Ligar poster</button></form>
+        {% endif %}
+      </div>
+
+      <div style="flex:1; text-align:right">
+        <div><strong>Fila pendente:</strong> {{ n_fila_pendente }}
+          <span class="muted">vídeo(s) aguardando postagem</span></div>
+        <div><strong>Publicados 24h:</strong> {{ n_publicados_24h }}</div>
+        <a href="/admin/" class="btn btn-sm" style="margin-top:6px; display:inline-block">Django Admin</a>
+      </div>
     </div>
   </div>
 

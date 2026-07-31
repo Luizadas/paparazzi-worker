@@ -126,12 +126,12 @@ def marcar_post_status(arquivo, status, url=""):
 
 
 # -- controle de LLM (para o shutdown gracioso) -----------------------------
-def llm_adquirir(consumidor):
+def llm_adquirir(consumidor, garantir=True):
     if not _setup_django():
         return
     try:
         from core.services import LLMController
-        LLMController().adquirir(consumidor)
+        LLMController().adquirir(consumidor, garantir=garantir)
     except Exception as e:
         print(f"⚠️  db_bridge.llm_adquirir: {e}")
 

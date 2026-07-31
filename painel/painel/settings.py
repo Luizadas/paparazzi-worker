@@ -141,8 +141,9 @@ OLLAMA_SYSTEMD_UNIT = os.getenv("OLLAMA_SYSTEMD_UNIT", "ollama.service")
 OLLAMA_MODELOS = [m.strip() for m in os.getenv(
     "OLLAMA_MODELOS", os.getenv("LLM_MODEL", "qwen2.5:3b")).split(",") if m.strip()]
 
-# Serviço systemd do watcher (liga/desliga pelo painel).
+# Serviços systemd controlados pelo painel (liga/desliga).
 WATCHER_SYSTEMD_UNIT = os.getenv("WATCHER_SYSTEMD_UNIT", "paparazzi-watcher.service")
+POSTER_SYSTEMD_UNIT = os.getenv("POSTER_SYSTEMD_UNIT", "paparazzi-poster.service")
 
 # Prefixo do systemctl. Serviços de sistema (ollama) controlados pelo usuário exigem
 # uma regra polkit (ver systemd/README) — ou troque para ["sudo","systemctl"].

@@ -8,6 +8,7 @@ USUARIO="luiz"
 
 echo "==> Copiando units para /etc/systemd/system/"
 cp "$REPO/systemd/paparazzi-watcher.service" \
+   "$REPO/systemd/paparazzi-poster.service" \
    "$REPO/systemd/paparazzi-retencao.service" \
    "$REPO/systemd/paparazzi-retencao.timer" /etc/systemd/system/
 
@@ -17,16 +18,19 @@ systemctl daemon-reload
 echo "==> Habilitando a retenção automática (timer horário)"
 systemctl enable --now paparazzi-retencao.timer
 
-echo "==> Watcher NÃO inicia no boot (quem liga/desliga é o painel)"
+echo "==> Watcher e Poster NÃO iniciam no boot (quem liga/desliga é o painel)"
 systemctl disable paparazzi-watcher.service 2>/dev/null || true
+systemctl disable paparazzi-poster.service 2>/dev/null || true
 
-echo "==> Instalando regra polkit (painel controla watcher/ollama sem sudo)"
+echo "==> Instalando regra polkit (painel controla watcher/poster/ollama sem sudo)"
 cat > /etc/polkit-1/rules.d/49-paparazzi.rules <<'EOF'
 polkit.addRule(function(action, subject) {
   if (action.id == "org.freedesktop.systemd1.manage-units" &&
       subject.user == "luiz") {
     var unit = action.lookup("unit");
-    if (unit == "paparazzi-watcher.service" || unit == "ollama.service") {
+    if (unit == "paparazzi-watcher.service" ||
+        unit == "paparazzi-poster.service" ||
+        unit == "ollama.service") {
       return polkit.Result.YES;
     }
   }

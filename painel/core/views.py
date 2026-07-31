@@ -12,22 +12,22 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from core.models import Canal, Video, Post
-from core.services import WatcherController
+from core.services import WatcherController, PosterController, SistemaController
 
 
 def dashboard(request):
-    wc = WatcherController()
     limite = timezone.now() - timedelta(hours=24)
     videos = (Video.objects
               .filter(criado_em__gte=limite)
               .select_related("canal")
               .prefetch_related("posts")[:200])
     contexto = {
-        "status": wc.status(),
+        "status": SistemaController().status(),
         "canais": Canal.objects.all(),
         "videos": videos,
         "n_publicados_24h": Post.objects.filter(
             status=Post.Status.PUBLICADO, postado_em__gte=limite).count(),
+        "n_fila_pendente": Post.objects.filter(status=Post.Status.PENDENTE).count(),
     }
     return render(request, "core/dashboard.html", contexto)
 
@@ -35,7 +35,7 @@ def dashboard(request):
 @require_POST
 def watcher_ligar(request):
     ok = WatcherController().ligar()
-    messages.success(request, "Watcher ligado." if ok
+    messages.success(request, "Watcher ligado — produzindo vídeos." if ok
                      else "Falha ao ligar o watcher (verifique o serviço systemd).")
     return redirect("dashboard")
 
@@ -43,9 +43,39 @@ def watcher_ligar(request):
 @require_POST
 def watcher_desligar(request):
     ok = WatcherController().desligar()
-    messages.success(request, "Watcher desligado (aguardando terminar o vídeo atual; "
-                              "LLM encerra quando a fila de posts esvaziar)." if ok
+    messages.success(request, "Watcher desligando graciosamente (termina o vídeo atual)." if ok
                      else "Falha ao desligar o watcher.")
+    return redirect("dashboard")
+
+
+@require_POST
+def poster_ligar(request):
+    ok = PosterController().ligar()
+    messages.success(request, "Poster ligado — postando a fila de já-processados." if ok
+                     else "Falha ao ligar o poster (verifique o serviço systemd).")
+    return redirect("dashboard")
+
+
+@require_POST
+def poster_desligar(request):
+    ok = PosterController().desligar()
+    messages.success(request, "Poster desligando graciosamente (termina o post atual)." if ok
+                     else "Falha ao desligar o poster.")
+    return redirect("dashboard")
+
+
+@require_POST
+def sistema_ligar(request):
+    SistemaController().ligar_tudo()
+    messages.success(request, "Sistema LIGADO — watcher e poster no ar.")
+    return redirect("dashboard")
+
+
+@require_POST
+def sistema_desligar(request):
+    SistemaController().desligar_tudo()
+    messages.success(request, "Sistema DESLIGANDO — watcher e poster encerram "
+                              "graciosamente (terminam o item atual); a LLM é liberada.")
     return redirect("dashboard")
 
 

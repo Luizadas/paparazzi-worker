@@ -1,5 +1,8 @@
 from .llm_controller import LLMController
 from .watcher_controller import WatcherController
+from .poster_controller import PosterController
+from .sistema_controller import SistemaController
 from .retencao_service import RetencaoService
 
-__all__ = ["LLMController", "WatcherController", "RetencaoService"]
+__all__ = ["LLMController", "WatcherController", "PosterController",
+           "SistemaController", "RetencaoService"]

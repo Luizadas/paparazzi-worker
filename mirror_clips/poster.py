@@ -795,6 +795,62 @@ def modo_watch(modo: str = "auto"):
             pass
 
 
+def modo_daemon(modo: str = "auto", deve_parar=lambda: False):
+    """
+    Poster como SERVIÇO (systemd): fica vivo postando a fila conforme ela enche,
+    e — diferente do modo_watch — NÃO encerra quando a fila esvazia; só sai quando
+    `deve_parar()` fica True (botão Desligar / SIGTERM).
+
+    Parada graciosa: `deve_parar` é checado ENTRE posts — o post em andamento
+    termina normalmente. Segura a LLM ('poster') apenas ENQUANTO há trabalho e a
+    libera quando a fila fica ociosa, para o Ollama poder ser encerrado.
+    """
+    log("📮 Poster em modo DAEMON — postando a fila (fica vivo aguardando novos).")
+    segurando_llm = False
+
+    def _adquirir():
+        nonlocal segurando_llm
+        if not segurando_llm:
+            try:
+                from comum import db_bridge
+                db_bridge.llm_adquirir("poster", garantir=False)
+            except Exception:
+                pass
+            segurando_llm = True
+
+    def _liberar():
+        nonlocal segurando_llm
+        if segurando_llm:
+            try:
+                from comum import db_bridge
+                db_bridge.llm_liberar("poster")
+            except Exception:
+                pass
+            segurando_llm = False
+
+    try:
+        while not deve_parar():
+            item = reivindicar_proximo()
+            if item:
+                _adquirir()
+                video_path = item["video_path"]
+                titulo = item.get("titulo", "")
+                caption = item.get("caption", "")
+                sucesso = postar_video(video_path, titulo, modo, caption)
+                marcar_fila_status(video_path, "publicado" if sucesso else "falhou")
+                time.sleep(POST_GAP)
+            else:
+                _liberar()               # fila ociosa → solta a LLM
+                # dorme em pequenos passos para responder rápido ao desligar
+                for _ in range(3):
+                    if deve_parar():
+                        break
+                    time.sleep(1)
+    finally:
+        _liberar()
+        log("👋 Poster daemon encerrado.")
+
+
 # ─────────────────────────────────────────────
 #  ENTRY POINT
 # ─────────────────────────────────────────────
@@ -812,6 +868,8 @@ if __name__ == "__main__":
     parser.add_argument("--queue", action="store_true", help="Posta toda a fila de uma vez (modo serial)")
     parser.add_argument("--watch", action="store_true",
                         help="Fica postando conforme a fila enche (pipeline concorrente)")
+    parser.add_argument("--daemon", action="store_true",
+                        help="Serviço: fica vivo postando a fila (não encerra ao esvaziar)")
 
     args = parser.parse_args()
 
@@ -823,7 +881,9 @@ if __name__ == "__main__":
     else:
         modo = "auto"
 
-    if args.watch:
+    if args.daemon:
+        modo_daemon(modo)
+    elif args.watch:
         modo_watch(modo)
     elif args.queue:
         processar_fila(modo)

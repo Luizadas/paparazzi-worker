@@ -1,0 +1,18 @@
+[Unit]
+Description=Paparazzi Poster (publica a fila de videos no TikTok)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luiz
+WorkingDirectory=/home/luiz/github/paparazzi-worker/painel
+ExecStart=/home/luiz/github/paparazzi-worker/venv/bin/python manage.py rodar_poster --modo selenium
+# Parada graciosa: SIGTERM pede parada; o poster so encerra ENTRE posts.
+# TimeoutStopSec da tempo do post em andamento terminar antes do kill.
+KillSignal=SIGTERM
+TimeoutStopSec=600
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
