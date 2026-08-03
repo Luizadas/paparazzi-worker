@@ -48,17 +48,29 @@ def watcher_desligar(request):
     return redirect("dashboard")
 
 
+_MSG_NAO_INSTALADO = ("Serviço do poster não instalado. Rode uma vez: "
+                      "sudo bash systemd/instalar_servicos.sh")
+
+
 @require_POST
 def poster_ligar(request):
-    ok = PosterController().ligar()
+    pc = PosterController()
+    if not pc.instalado():
+        messages.error(request, _MSG_NAO_INSTALADO)
+        return redirect("dashboard")
+    ok = pc.ligar()
     messages.success(request, "Poster ligado — postando a fila de já-processados." if ok
-                     else "Falha ao ligar o poster (verifique o serviço systemd).")
+                     else "Falha ao ligar o poster (veja: journalctl -u paparazzi-poster).")
     return redirect("dashboard")
 
 
 @require_POST
 def poster_desligar(request):
-    ok = PosterController().desligar()
+    pc = PosterController()
+    if not pc.instalado():
+        messages.error(request, _MSG_NAO_INSTALADO)
+        return redirect("dashboard")
+    ok = pc.desligar()
     messages.success(request, "Poster desligando graciosamente (termina o post atual)." if ok
                      else "Falha ao desligar o poster.")
     return redirect("dashboard")

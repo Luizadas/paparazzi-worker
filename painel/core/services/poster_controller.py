@@ -27,6 +27,9 @@ class PosterController:
         obj = EstadoSistema.objects.filter(chave=chave).first()
         return obj.valor if obj else default
 
+    def instalado(self):
+        return systemd.existe(self.unit)
+
     def esta_ligado(self):
         return systemd.esta_ativo(self.unit)
 
@@ -39,6 +42,7 @@ class PosterController:
     def status(self):
         est = self.estado()
         return {
+            "instalado": self.instalado(),
             "ligado": est == "active",
             "estado": est,
             "desligando": est == "deactivating" or (

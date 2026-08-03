@@ -23,6 +23,12 @@ def esta_ativo(unit):
     return systemctl("is-active", "--quiet", unit).returncode == 0
 
 
+def existe(unit):
+    """True se a unit está instalada no systemd (aparece em list-unit-files)."""
+    r = systemctl("list-unit-files", unit)
+    return r.returncode == 0 and unit in (r.stdout or "")
+
+
 def estado(unit):
     """String crua: active / inactive / deactivating / activating / failed..."""
     return (systemctl("is-active", unit).stdout or "").strip() or "unknown"

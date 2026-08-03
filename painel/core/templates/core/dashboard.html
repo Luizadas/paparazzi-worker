@@ -70,11 +70,14 @@
       <div>
         <div style="margin-bottom:6px">
           <strong>Poster</strong> (publica)
-          {% if status.poster.desligando %}<span class="badge off">desligando…</span>
+          {% if not status.poster.instalado %}<span class="badge off">não instalado</span>
+          {% elif status.poster.desligando %}<span class="badge off">desligando…</span>
           {% elif status.poster.ligado %}<span class="badge on">LIGADO</span>
           {% else %}<span class="badge off">desligado</span>{% endif %}
         </div>
-        {% if status.poster.ligado or status.poster.desligando %}
+        {% if not status.poster.instalado %}
+          <span class="muted">rode: sudo bash systemd/instalar_servicos.sh</span>
+        {% elif status.poster.ligado or status.poster.desligando %}
           <form method="post" action="{% url 'poster_desligar' %}">{% csrf_token %}
             <button class="btn-off">Desligar poster</button></form>
         {% else %}

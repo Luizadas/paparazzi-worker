@@ -34,6 +34,9 @@ class WatcherController:
         obj = EstadoSistema.objects.filter(chave=chave).first()
         return obj.valor if obj else default
 
+    def instalado(self):
+        return systemd.existe(self.unit)
+
     def esta_ligado(self):
         return systemd.esta_ativo(self.unit)
 
