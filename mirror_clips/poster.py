@@ -32,8 +32,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 CLIENT_KEY           = os.getenv("TIKTOK_CLIENT_KEY", "")
 CLIENT_SECRET        = os.getenv("TIKTOK_CLIENT_SECRET", "")
 ACCESS_TOKEN         = os.getenv("TIKTOK_ACCESS_TOKEN", "")
-PRIVACY_LEVEL        = os.getenv("TIKTOK_PRIVACY_LEVEL", "PUBLIC_TO_EVERYONE")
+PRIVACY_LEVEL        = os.getenv("TIKTOK_PRIVACY_LEVEL", "SELF_ONLY")
 DISABLE_COMMENT      = os.getenv("TIKTOK_DISABLE_COMMENT", "false").lower() == "true"
+
+
+def _privacidade_atual():
+    """Nível de privacidade escolhido no painel (botão Privado/Público, guardado em
+    EstadoSistema 'privacidade'), com fallback para o TIKTOK_PRIVACY_LEVEL do .env.
+    Lido A CADA post, para o botão valer na hora."""
+    try:
+        from comum import db_bridge
+        return db_bridge.get_estado("privacidade", PRIVACY_LEVEL) or PRIVACY_LEVEL
+    except Exception:
+        return PRIVACY_LEVEL
 DISABLE_DUET         = os.getenv("TIKTOK_DISABLE_DUET", "false").lower() == "true"
 DISABLE_STITCH       = os.getenv("TIKTOK_DISABLE_STITCH", "false").lower() == "true"
 SESSION_ID           = os.getenv("TIKTOK_SESSION_ID", "")
@@ -134,7 +145,7 @@ class TikTokAPIposter:
         payload = {
             "post_info": {
                 "title": "",           # Preenchido na etapa de publicação
-                "privacy_level": PRIVACY_LEVEL,
+                "privacy_level": _privacidade_atual(),
                 "disable_comment": DISABLE_COMMENT,
                 "disable_duet": DISABLE_DUET,
                 "disable_stitch": DISABLE_STITCH,
@@ -367,11 +378,12 @@ class TikTokSeleniumPoster:
             "FOLLOWER_OF_CREATOR": ["Followers", "Seguidores"],
             "SELF_ONLY": ["Only you", "Only me", "Somente você", "Private", "Privado"],
         }
-        alvos = textos_por_nivel.get(PRIVACY_LEVEL)
+        nivel = _privacidade_atual()
+        alvos = textos_por_nivel.get(nivel)
         if not alvos:
             return True  # nível desconhecido: deixa o padrão da conta
 
-        log(f"🔒 Selenium: Ajustando visibilidade para '{PRIVACY_LEVEL}'...")
+        log(f"🔒 Selenium: Ajustando visibilidade para '{nivel}'...")
         time.sleep(2)
 
         # 0. Fecha popups/modais que possam sobrepor e bloquear cliques
@@ -440,7 +452,7 @@ class TikTokSeleniumPoster:
             except Exception:
                 continue
 
-        log(f"⚠️  Selenium: NÃO foi possível selecionar a opção para '{PRIVACY_LEVEL}'.")
+        log(f"⚠️  Selenium: NÃO foi possível selecionar a opção para '{nivel}'.")
         return False
 
     def _fechar_tour(self):
@@ -538,7 +550,7 @@ class TikTokSeleniumPoster:
 
         # Ajusta a visibilidade do post (público/amigos/privado) antes de publicar
         privacidade_ok = self._definir_privacidade(wait)
-        if PRIVACY_LEVEL == "SELF_ONLY" and not privacidade_ok:
+        if _privacidade_atual() == "SELF_ONLY" and not privacidade_ok:
             log("🛑 Selenium: Abortando — não foi possível garantir visibilidade PRIVADA.")
             self.driver.save_screenshot(str(Path(__file__).parent / "selenium_debug.png"))
             return False

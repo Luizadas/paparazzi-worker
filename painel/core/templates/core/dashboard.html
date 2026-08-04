@@ -75,6 +75,35 @@
 
       <div>
         <div style="margin-bottom:6px">
+          <strong>Editor</strong> (edita)
+          {% if not status.editor.instalado %}<span class="badge off">não instalado</span>
+          {% elif status.editor.desligando %}<span class="badge off">desligando…</span>
+          {% elif status.editor.ligado %}<span class="badge on">LIGADO</span>
+          {% else %}<span class="badge off">desligado</span>{% endif %}
+        </div>
+        {% if not status.editor.instalado %}
+          <span class="muted">rode: sudo bash systemd/instalar_servicos.sh</span>
+        {% elif status.editor.ligado or status.editor.desligando %}
+          <form method="post" action="{% url 'editor_desligar' %}">{% csrf_token %}
+            <button class="btn-off">Desligar editor</button></form>
+        {% else %}
+          <form method="post" action="{% url 'editor_ligar' %}">{% csrf_token %}
+            <button class="btn-on">Ligar editor</button></form>
+        {% endif %}
+        {% if status.editor.instalado %}
+          <form method="post" action="{% url 'autoeditor_toggle' %}" style="margin-top:8px">
+            {% csrf_token %}
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer">
+              <input type="checkbox" name="autoeditor" onchange="this.form.submit()"
+                     {% if status.editor.autoeditor %}checked{% endif %}>
+              <span>AutoEditor</span>
+            </label>
+          </form>
+        {% endif %}
+      </div>
+
+      <div>
+        <div style="margin-bottom:6px">
           <strong>Poster</strong> (publica)
           {% if not status.poster.instalado %}<span class="badge off">não instalado</span>
           {% elif status.poster.desligando %}<span class="badge off">desligando…</span>
@@ -106,6 +135,15 @@
                      {% if status.poster.autoposter %}checked{% endif %}>
               <span>AutoPoster</span>
             </label>
+          </form>
+          <form method="post" action="{% url 'privacidade_toggle' %}" style="margin-top:8px">
+            {% csrf_token %}
+            <span class="muted">Postar como:</span>
+            {% if status.poster.privacidade == "PUBLIC_TO_EVERYONE" %}
+              <button class="btn-sm" style="background:#16a34a">🌎 Público (clique p/ privado)</button>
+            {% else %}
+              <button class="btn-sm" style="background:#4b5563">🔒 Privado (clique p/ público)</button>
+            {% endif %}
           </form>
         {% endif %}
       </div>

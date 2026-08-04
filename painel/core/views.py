@@ -93,6 +93,16 @@ def autoposter_toggle(request):
 
 
 @require_POST
+def privacidade_toggle(request):
+    pc = PosterController()
+    novo = "PUBLIC_TO_EVERYONE" if pc.privacidade() == "SELF_ONLY" else "SELF_ONLY"
+    pc.set_privacidade(novo)
+    messages.success(request, "Posts agora vão como 🌎 PÚBLICO." if novo == "PUBLIC_TO_EVERYONE"
+                     else "Posts agora vão como 🔒 PRIVADO (só você).")
+    return redirect("dashboard")
+
+
+@require_POST
 def editor_ligar(request):
     ec = EditorController()
     if not ec.instalado():

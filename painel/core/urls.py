@@ -9,6 +9,7 @@ urlpatterns = [
     path("poster/ligar", views.poster_ligar, name="poster_ligar"),
     path("poster/desligar", views.poster_desligar, name="poster_desligar"),
     path("poster/autoposter", views.autoposter_toggle, name="autoposter_toggle"),
+    path("poster/privacidade", views.privacidade_toggle, name="privacidade_toggle"),
     path("editor/ligar", views.editor_ligar, name="editor_ligar"),
     path("editor/desligar", views.editor_desligar, name="editor_desligar"),
     path("editor/autoeditor", views.autoeditor_toggle, name="autoeditor_toggle"),

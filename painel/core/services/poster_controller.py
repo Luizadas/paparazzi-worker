@@ -45,6 +45,12 @@ class PosterController:
     def set_autoposter(self, ligado):
         self._set("autoposter", "1" if ligado else "0")
 
+    def privacidade(self):
+        return self._get("privacidade", "SELF_ONLY")
+
+    def set_privacidade(self, nivel):
+        self._set("privacidade", nivel)
+
     def status(self):
         est = self.estado()
         return {
@@ -54,6 +60,7 @@ class PosterController:
             "desligando": est == "deactivating" or (
                 self.parada_solicitada() and est != "inactive"),
             "autoposter": self.autoposter(),
+            "privacidade": self.privacidade(),
         }
 
     def ligar(self):
