@@ -57,6 +57,7 @@ class Video(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DETECTADO)
     versao_sistema = models.CharField(max_length=20, blank=True)   # ex.: "1.2.0"
     deteccao = models.JSONField(null=True, blank=True)             # resultado do OCR/tarja
+    transcricao = models.TextField(blank=True)                     # base p/ regerar a legenda
 
     arquivo_local = models.CharField(max_length=500, blank=True)   # caminho do _final.mp4
     arquivo_removido = models.BooleanField(default=False)          # True após retenção de 24h

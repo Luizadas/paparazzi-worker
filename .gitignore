@@ -47,3 +47,4 @@ data/processamentos.jsonl
 
 painel/db.sqlite3
 painel/painel.log
+*.bak

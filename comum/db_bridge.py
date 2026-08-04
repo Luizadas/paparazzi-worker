@@ -41,7 +41,7 @@ def video_id_de(nome):
 
 
 def registrar_video_processado(arquivo, deteccao=None, versao="", titulo="",
-                               canal_youtube_id=None, video_id=None):
+                               canal_youtube_id=None, video_id=None, transcricao=""):
     """Upsert de um Video (status=processado) após o coletor gerar o _final.mp4."""
     if not _setup_django():
         return None
@@ -58,6 +58,7 @@ def registrar_video_processado(arquivo, deteccao=None, versao="", titulo="",
                 "canal": canal, "titulo": titulo or "",
                 "status": Video.Status.PROCESSADO,
                 "deteccao": deteccao or {},
+                "transcricao": transcricao or "",
                 "arquivo_local": arquivo or "",
                 "arquivo_removido": False,
                 "tamanho_bytes": tamanho,

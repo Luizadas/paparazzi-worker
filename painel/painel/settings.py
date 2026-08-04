@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 import dj_database_url
@@ -21,6 +22,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Raiz do repositório (um nível acima de painel/) — onde fica o .env único.
 REPO_DIR = BASE_DIR.parent
 load_dotenv(REPO_DIR / ".env")
+# Torna 'comum' importável pelo painel (ex.: comum.legenda_ia para regerar).
+if str(REPO_DIR) not in sys.path:
+    sys.path.insert(0, str(REPO_DIR))
 
 
 # Quick-start development settings - unsuitable for production

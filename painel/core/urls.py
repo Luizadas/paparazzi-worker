@@ -13,4 +13,10 @@ urlpatterns = [
     path("sistema/desligar", views.sistema_desligar, name="sistema_desligar"),
     path("canal/adicionar", views.canal_adicionar, name="canal_adicionar"),
     path("canal/<int:canal_id>/remover", views.canal_remover, name="canal_remover"),
+    # Aba de vídeos
+    path("videos", views.videos_lista, name="videos"),
+    path("videos/<int:video_id>/ver", views.video_ver, name="video_ver"),
+    path("videos/<int:video_id>/download", views.video_download, name="video_download"),
+    path("videos/<int:video_id>/legenda/editar", views.caption_editar, name="caption_editar"),
+    path("videos/<int:video_id>/legenda/regerar", views.caption_regerar, name="caption_regerar"),
 ]

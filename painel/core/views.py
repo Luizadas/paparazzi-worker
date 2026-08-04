@@ -4,10 +4,12 @@ Painel de controle (local, sem login). Mostra os vídeos das últimas 24h e perm
   - ligar / desligar o watcher (com shutdown gracioso das LLMs)
 """
 
+import os
 from datetime import timedelta
 
 from django.contrib import messages
-from django.shortcuts import render, redirect
+from django.http import FileResponse, Http404
+from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
@@ -127,3 +129,78 @@ def canal_remover(request, canal_id):
     Canal.objects.filter(id=canal_id).delete()
     messages.success(request, "Canal removido.")
     return redirect("dashboard")
+
+
+# ─────────────────────────────────────────────
+#  Aba: Lista de vídeos (controle das postagens)
+# ─────────────────────────────────────────────
+
+def _post_do_video(video):
+    """O Post principal do vídeo (o mais recente). Cria um vazio se não houver."""
+    return video.posts.order_by("-criado_em").first()
+
+
+def _arquivo_disponivel(video):
+    return bool(video.arquivo_local and not video.arquivo_removido
+               and os.path.exists(video.arquivo_local))
+
+
+def videos_lista(request):
+    videos = (Video.objects.select_related("canal")
+              .prefetch_related("posts").order_by("-criado_em"))
+    rows = []
+    for v in videos:
+        post = _post_do_video(v)
+        rows.append({
+            "v": v,
+            "caption": post.caption if post else "",
+            "post_status": post.get_status_display() if post else "—",
+            "disponivel": _arquivo_disponivel(v),
+            "tem_transcricao": bool(v.transcricao),
+        })
+    return render(request, "core/videos.html", {"rows": rows})
+
+
+def video_ver(request, video_id):
+    v = get_object_or_404(Video, id=video_id)
+    if not _arquivo_disponivel(v):
+        raise Http404("Arquivo do vídeo indisponível (expirado ou removido).")
+    return FileResponse(open(v.arquivo_local, "rb"), content_type="video/mp4")
+
+
+def video_download(request, video_id):
+    v = get_object_or_404(Video, id=video_id)
+    if not _arquivo_disponivel(v):
+        raise Http404("Arquivo do vídeo indisponível (expirado ou removido).")
+    return FileResponse(open(v.arquivo_local, "rb"), as_attachment=True,
+                        filename=os.path.basename(v.arquivo_local))
+
+
+@require_POST
+def caption_editar(request, video_id):
+    v = get_object_or_404(Video, id=video_id)
+    nova = (request.POST.get("caption") or "").strip()
+    post = _post_do_video(v) or Post.objects.create(video=v)
+    post.caption = nova
+    post.save(update_fields=["caption", "atualizado_em"])
+    messages.success(request, "Legenda salva.")
+    return redirect("videos")
+
+
+@require_POST
+def caption_regerar(request, video_id):
+    v = get_object_or_404(Video, id=video_id)
+    if not v.transcricao:
+        messages.error(request, "Sem transcrição salva para este vídeo — não dá para "
+                                "regerar (vídeos antigos não têm transcrição).")
+        return redirect("videos")
+    from comum.legenda_ia import gerar_legenda_ia
+    nova = gerar_legenda_ia(v.transcricao, titulo_original="")
+    if not nova:
+        messages.error(request, "A IA não retornou legenda (Ollama offline?). Tente de novo.")
+        return redirect("videos")
+    post = _post_do_video(v) or Post.objects.create(video=v)
+    post.caption = nova
+    post.save(update_fields=["caption", "atualizado_em"])
+    messages.success(request, "Legenda regerada pela IA.")
+    return redirect("videos")

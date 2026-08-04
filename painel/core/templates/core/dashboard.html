@@ -30,7 +30,11 @@
 </head>
 <body>
 <header>
-  <h1>🎬 Paparazzi — Painel de Controle</h1>
+  <h1>🎬 Paparazzi</h1>
+  <nav style="margin-right:auto">
+    <a href="{% url 'dashboard' %}" style="color:#e6e6e6;font-weight:600;text-decoration:none;margin-right:14px">Controle</a>
+    <a href="{% url 'videos' %}" style="color:#60a5fa;font-weight:600;text-decoration:none">Vídeos</a>
+  </nav>
   <div class="row">
     {% if status.algo_ligado %}
       <form method="post" action="{% url 'sistema_desligar' %}">{% csrf_token %}

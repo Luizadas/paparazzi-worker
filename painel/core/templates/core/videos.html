@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paparazzi — Lista de vídeos</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 0; background:#0f1115; color:#e6e6e6; }
+    header { padding:16px 24px; background:#161a22; border-bottom:1px solid #262b36;
+             display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+    h1 { font-size:18px; margin:0; }
+    nav a { color:#60a5fa; margin-right:14px; text-decoration:none; font-weight:600; }
+    nav a.ativo { color:#e6e6e6; }
+    main { padding:20px; }
+    .barra { display:flex; gap:12px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+    input[type=search] { background:#0f1115; border:1px solid #374151; color:#e6e6e6;
+                         padding:9px 12px; border-radius:8px; min-width:280px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { text-align:left; padding:10px; border-bottom:1px solid #262b36; vertical-align:top; }
+    th { color:#9aa4b2; font-weight:600; cursor:pointer; user-select:none; white-space:nowrap; }
+    th[data-sort]:hover { color:#e6e6e6; }
+    th .seta { opacity:.5; font-size:11px; }
+    a.nome { color:#60a5fa; text-decoration:none; font-weight:600; }
+    a.nome:hover { text-decoration:underline; }
+    textarea { width:100%; min-width:260px; min-height:60px; background:#0f1115;
+               border:1px solid #374151; color:#e6e6e6; border-radius:8px; padding:8px;
+               font-family:inherit; font-size:13px; resize:vertical; }
+    button { border:0; border-radius:8px; padding:6px 11px; font-weight:600; cursor:pointer; font-size:12px; }
+    .b-save { background:#2563eb; color:#fff; } .b-ia { background:#7c3aed; color:#fff; }
+    .b-dl { background:#374151; color:#fff; text-decoration:none; display:inline-block; padding:6px 11px; border-radius:8px; font-size:12px; }
+    .muted { color:#9aa4b2; font-size:12px; }
+    .acoes { display:flex; gap:6px; margin-top:6px; }
+    .msg { padding:10px 14px; border-radius:8px; margin-bottom:10px; background:#1f2937; }
+    .indispon { color:#f59e0b; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>🎬 Paparazzi</h1>
+  <nav>
+    <a href="{% url 'dashboard' %}">Controle</a>
+    <a href="{% url 'videos' %}" class="ativo">Vídeos</a>
+  </nav>
+</header>
+
+<main>
+  {% if messages %}{% for m in messages %}<div class="msg">{{ m }}</div>{% endfor %}{% endif %}
+
+  <h2 style="margin:0 0 12px">Lista de vídeos</h2>
+  <div class="barra">
+    <input type="search" id="busca" placeholder="🔎 buscar por legenda, nome, canal…"
+           oninput="filtrar()">
+    <span class="muted" id="contador"></span>
+  </div>
+
+  <table id="tabela">
+    <thead>
+      <tr>
+        <th data-sort="nome" onclick="ordenar('nome')">Nome do vídeo <span class="seta"></span></th>
+        <th>Legenda do post</th>
+        <th data-sort="status" onclick="ordenar('status')">Status <span class="seta"></span></th>
+        <th data-sort="data" onclick="ordenar('data')">Data de criação <span class="seta"></span></th>
+        <th>Download</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr data-nome="{{ r.caption|default:r.v.video_id|lower }}"
+          data-status="{{ r.post_status|lower }}"
+          data-data="{{ r.v.criado_em|date:'YmdHis' }}"
+          data-busca="{{ r.caption|lower }} {{ r.v.video_id|lower }} {{ r.v.canal.nome|default:''|lower }}">
+        <td>
+          {% if r.disponivel %}
+            <a class="nome" href="{% url 'video_ver' r.v.id %}" target="_blank"
+               title="Abrir o vídeo em outra aba">
+              {{ r.caption|default:r.v.video_id|truncatechars:60 }}</a>
+          {% else %}
+            <span>{{ r.caption|default:r.v.video_id|truncatechars:60 }}</span>
+            <div class="muted indispon">vídeo indisponível (expirado)</div>
+          {% endif %}
+          <div class="muted">{{ r.v.video_id }} · {{ r.v.canal.nome|default:"—" }}</div>
+        </td>
+        <td>
+          <form method="post" action="{% url 'caption_editar' r.v.id %}" id="edit-{{ r.v.id }}">
+            {% csrf_token %}
+            <textarea name="caption">{{ r.caption }}</textarea>
+          </form>
+          <div class="acoes">
+            <button class="b-save" type="submit" form="edit-{{ r.v.id }}">Salvar</button>
+            <form method="post" action="{% url 'caption_regerar' r.v.id %}" style="display:inline"
+                  onsubmit="return confirm('Regerar a legenda por IA? A atual será substituída.')">
+              {% csrf_token %}
+              <button class="b-ia" type="submit"
+                {% if not r.tem_transcricao %}disabled title="Sem transcrição salva"{% endif %}>
+                ↻ Regerar IA</button>
+            </form>
+          </div>
+        </td>
+        <td>{{ r.post_status }}</td>
+        <td class="muted">{{ r.v.criado_em|date:"d/m/Y H:i" }}</td>
+        <td>
+          {% if r.disponivel %}
+            <a class="b-dl" href="{% url 'video_download' r.v.id %}">⬇ baixar</a>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="muted">Nenhum vídeo no banco.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</main>
+
+<script>
+  const tbody = document.querySelector('#tabela tbody');
+  const linhas = () => Array.from(tbody.querySelectorAll('tr[data-busca]'));
+  let ordem = { col: 'data', dir: -1 };
+
+  function filtrar() {
+    const q = document.getElementById('busca').value.toLowerCase().trim();
+    let n = 0;
+    linhas().forEach(tr => {
+      const ok = !q || tr.dataset.busca.includes(q);
+      tr.style.display = ok ? '' : 'none';
+      if (ok) n++;
+    });
+    document.getElementById('contador').textContent = n + ' vídeo(s)';
+  }
+
+  function ordenar(col) {
+    ordem.dir = (ordem.col === col) ? -ordem.dir : 1;
+    ordem.col = col;
+    const rows = linhas().sort((a, b) => {
+      const va = a.dataset[col] || '', vb = b.dataset[col] || '';
+      return va > vb ? ordem.dir : va < vb ? -ordem.dir : 0;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+    document.querySelectorAll('th[data-sort] .seta').forEach(s => s.textContent = '');
+    const th = document.querySelector(`th[data-sort="${col}"] .seta`);
+    if (th) th.textContent = ordem.dir > 0 ? '▲' : '▼';
+  }
+
+  filtrar();
+</script>
+</body>
+</html>
