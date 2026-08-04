@@ -135,6 +135,7 @@ def marcar_fila_status(video_path: str, status: str):
 def reivindicar_proximo():
     """Pega ATOMICAMENTE o próximo item 'pendente', marca 'postando' e o retorna
     (ou None se não houver). Permite que processador e postador rodem em paralelo."""
+    reivindicado = None
     with _lock_fila():
         fila = carregar_fila()
         for item in fila:
@@ -142,8 +143,16 @@ def reivindicar_proximo():
                 item["status"] = "postando"
                 item["atualizado_em"] = datetime.now().isoformat()
                 salvar_fila(fila)
-                return item
-    return None
+                reivindicado = item
+                break
+    # Espelha 'postando' no banco (best-effort) para o painel mostrar o item atual.
+    if reivindicado:
+        try:
+            from comum import db_bridge
+            db_bridge.marcar_post_status(str(reivindicado["video_path"]), "postando")
+        except Exception:
+            pass
+    return reivindicado
 
 
 # ─────────────────────────────────────────────

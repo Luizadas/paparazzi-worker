@@ -21,6 +21,8 @@ def dashboard(request):
               .filter(criado_em__gte=limite)
               .select_related("canal")
               .prefetch_related("posts")[:200])
+    post_atual = (Post.objects.filter(status=Post.Status.POSTANDO)
+                  .select_related("video").order_by("-atualizado_em").first())
     contexto = {
         "status": SistemaController().status(),
         "canais": Canal.objects.all(),
@@ -28,6 +30,8 @@ def dashboard(request):
         "n_publicados_24h": Post.objects.filter(
             status=Post.Status.PUBLICADO, postado_em__gte=limite).count(),
         "n_fila_pendente": Post.objects.filter(status=Post.Status.PENDENTE).count(),
+        "n_postando": Post.objects.filter(status=Post.Status.POSTANDO).count(),
+        "post_atual": post_atual.video.video_id if post_atual else None,
     }
     return render(request, "core/dashboard.html", contexto)
 

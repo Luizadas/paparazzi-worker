@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% if status.algo_ligado or status.algo_desligando %}<meta http-equiv="refresh" content="8">{% endif %}
   <title>Paparazzi — Painel de Controle</title>
   <style>
     :root { color-scheme: light dark; }
@@ -75,6 +76,14 @@
           {% elif status.poster.ligado %}<span class="badge on">LIGADO</span>
           {% else %}<span class="badge off">desligado</span>{% endif %}
         </div>
+        {% if status.poster.ligado %}
+          <div class="muted" style="margin-bottom:6px">
+            {% if n_postando %}📤 postando agora: <b>{{ post_atual }}</b>
+              {% if n_fila_pendente %}· mais {{ n_fila_pendente }} na fila{% endif %}
+            {% elif n_fila_pendente %}⏳ vai postar {{ n_fila_pendente }} da fila…
+            {% else %}💤 ocioso — aguardando novos vídeos{% endif %}
+          </div>
+        {% endif %}
         {% if not status.poster.instalado %}
           <span class="muted">rode: sudo bash systemd/instalar_servicos.sh</span>
         {% elif status.poster.ligado or status.poster.desligando %}
