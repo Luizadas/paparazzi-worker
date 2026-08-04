@@ -1,0 +1,18 @@
+[Unit]
+Description=Paparazzi Editor (processa a fila de edicao: baixa, espelha, legenda)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=luiz
+WorkingDirectory=/home/luiz/github/paparazzi-worker/painel
+ExecStart=/home/luiz/github/paparazzi-worker/venv/bin/python manage.py rodar_editor
+# Parada graciosa: SIGTERM pede parada; o editor so encerra ENTRE videos.
+# TimeoutStopSec da tempo do video em edicao terminar (whisper medium + OCR).
+KillSignal=SIGTERM
+TimeoutStopSec=1800
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

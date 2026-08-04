@@ -52,18 +52,19 @@ def registrar_video_processado(arquivo, deteccao=None, versao="", titulo="",
         if canal_youtube_id:
             canal, _ = Canal.objects.get_or_create(youtube_id=canal_youtube_id)
         tamanho = os.path.getsize(arquivo) if arquivo and os.path.exists(arquivo) else None
-        video, _ = Video.objects.update_or_create(
-            video_id=vid, versao_sistema=versao,
-            defaults={
-                "canal": canal, "titulo": titulo or "",
-                "status": Video.Status.PROCESSADO,
-                "deteccao": deteccao or {},
-                "transcricao": transcricao or "",
-                "arquivo_local": arquivo or "",
-                "arquivo_removido": False,
-                "tamanho_bytes": tamanho,
-            },
-        )
+        defaults = {
+            "titulo": titulo or "",
+            "status": Video.Status.PROCESSADO,
+            "versao_sistema": versao,
+            "deteccao": deteccao or {},
+            "transcricao": transcricao or "",
+            "arquivo_local": arquivo or "",
+            "arquivo_removido": False,
+            "tamanho_bytes": tamanho,
+        }
+        if canal:
+            defaults["canal"] = canal
+        video, _ = Video.objects.update_or_create(video_id=vid, defaults=defaults)
         return video.id
     except Exception as e:
         print(f"⚠️  db_bridge.registrar_video_processado: {e}")
@@ -77,8 +78,7 @@ def registrar_post_pendente(arquivo, caption="", versao="", privacidade="SELF_ON
     try:
         from core.models import Video, Post
         vid = video_id_de(arquivo)
-        video = (Video.objects.filter(video_id=vid, versao_sistema=versao).first()
-                 or Video.objects.filter(video_id=vid).order_by("-criado_em").first())
+        video = Video.objects.filter(video_id=vid).first()
         if not video:
             return None
         post, _ = Post.objects.get_or_create(
@@ -178,6 +178,106 @@ def contar_pendentes():
     try:
         from core.models import Post
         return Post.objects.filter(status=Post.Status.PENDENTE).count()
+    except Exception:
+        return 0
+
+
+# -- CANDIDATOS / FILA DE EDIÇÃO no banco -----------------------------------
+def registrar_candidato(video_id, canal_youtube_id=None, canal_nome="", titulo="",
+                        url="", views=0, publicado_origem=None):
+    """Registra (ou atualiza) um vídeo que PASSOU no filtro do watcher como
+    CANDIDATO à edição (status 'detectado'). Não regride o status de vídeos que já
+    estão em edição/processados. Guarda views, canal e data de publicação no canal."""
+    if not _setup_django():
+        return None
+    try:
+        from core.models import Canal, Video
+        canal = None
+        if canal_youtube_id:
+            canal, _ = Canal.objects.get_or_create(
+                youtube_id=canal_youtube_id, defaults={"nome": canal_nome or ""})
+        video, criado = Video.objects.get_or_create(
+            video_id=video_id,
+            defaults={
+                "canal": canal, "titulo": titulo or "",
+                "url_origem": url or f"https://www.youtube.com/watch?v={video_id}",
+                "views": views or 0, "publicado_origem": publicado_origem,
+                "status": Video.Status.DETECTADO,
+            },
+        )
+        if not criado:
+            campos = []
+            if views:
+                video.views = views; campos.append("views")
+            if publicado_origem and not video.publicado_origem:
+                video.publicado_origem = publicado_origem; campos.append("publicado_origem")
+            if canal and not video.canal:
+                video.canal = canal; campos.append("canal")
+            if campos:
+                video.save(update_fields=campos + ["atualizado_em"])
+        return video.id
+    except Exception as e:
+        print(f"⚠️  db_bridge.registrar_candidato: {e}")
+        return None
+
+
+def marcar_para_editar(video_pk):
+    """Botão 'Editar' do painel: promove um candidato (detectado) para a fila de
+    edição (fila_edicao). Retorna True se promoveu."""
+    if not _setup_django():
+        return False
+    try:
+        from core.models import Video
+        n = (Video.objects.filter(id=video_pk, status=Video.Status.DETECTADO)
+             .update(status=Video.Status.FILA_EDICAO))
+        return n > 0
+    except Exception as e:
+        print(f"⚠️  db_bridge.marcar_para_editar: {e}")
+        return False
+
+
+def reivindicar_proxima_edicao(auto=False):
+    """Reivindica ATOMICAMENTE o próximo vídeo a editar → 'processando'.
+    auto=False: só os selecionados (fila_edicao). auto=True (AutoEditor): também
+    puxa candidatos (detectado). Retorna {video_id, url} ou None."""
+    if not _setup_django():
+        return None
+    try:
+        from django.db import transaction
+        from core.models import Video
+        statuses = [Video.Status.FILA_EDICAO]
+        if auto:
+            statuses.append(Video.Status.DETECTADO)
+        with transaction.atomic():
+            v = (Video.objects.select_for_update(skip_locked=True)
+                 .filter(status__in=statuses).order_by("criado_em").first())
+            if not v:
+                return None
+            v.status = Video.Status.PROCESSANDO
+            v.save(update_fields=["status", "atualizado_em"])
+            return {"video_id": v.video_id,
+                    "url": v.url_origem or f"https://www.youtube.com/watch?v={v.video_id}"}
+    except Exception as e:
+        print(f"⚠️  db_bridge.reivindicar_proxima_edicao: {e}")
+        return None
+
+
+def marcar_edicao_falhou(video_id):
+    if not _setup_django():
+        return
+    try:
+        from core.models import Video
+        Video.objects.filter(video_id=video_id).update(status=Video.Status.ERRO)
+    except Exception as e:
+        print(f"⚠️  db_bridge.marcar_edicao_falhou: {e}")
+
+
+def contar_por_status(status):
+    if not _setup_django():
+        return 0
+    try:
+        from core.models import Video
+        return Video.objects.filter(status=status).count()
     except Exception:
         return 0
 

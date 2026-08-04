@@ -9,6 +9,7 @@ USUARIO="luiz"
 echo "==> Copiando units para /etc/systemd/system/"
 cp "$REPO/systemd/paparazzi-watcher.service" \
    "$REPO/systemd/paparazzi-poster.service" \
+   "$REPO/systemd/paparazzi-editor.service" \
    "$REPO/systemd/paparazzi-retencao.service" \
    "$REPO/systemd/paparazzi-retencao.timer" /etc/systemd/system/
 
@@ -18,9 +19,10 @@ systemctl daemon-reload
 echo "==> Habilitando a retenção automática (timer horário)"
 systemctl enable --now paparazzi-retencao.timer
 
-echo "==> Watcher e Poster NÃO iniciam no boot (quem liga/desliga é o painel)"
+echo "==> Watcher/Poster/Editor NÃO iniciam no boot (quem liga/desliga é o painel)"
 systemctl disable paparazzi-watcher.service 2>/dev/null || true
 systemctl disable paparazzi-poster.service 2>/dev/null || true
+systemctl disable paparazzi-editor.service 2>/dev/null || true
 
 echo "==> Instalando autorização do polkit (painel controla os serviços sem sudo)"
 # Formato .rules (JavaScript) — polkit >= 0.106
@@ -32,6 +34,7 @@ polkit.addRule(function(action, subject) {
     var unit = action.lookup("unit");
     if (unit == "paparazzi-watcher.service" ||
         unit == "paparazzi-poster.service" ||
+        unit == "paparazzi-editor.service" ||
         unit == "ollama.service") {
       return polkit.Result.YES;
     }

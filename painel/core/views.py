@@ -14,7 +14,8 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from core.models import Canal, Video, Post
-from core.services import WatcherController, PosterController, SistemaController
+from core.services import (WatcherController, PosterController, EditorController,
+                           SistemaController)
 
 
 def dashboard(request):
@@ -89,6 +90,58 @@ def autoposter_toggle(request):
     messages.success(request, "AutoPoster LIGADO — o poster vai puxar a fila." if ligado
                      else "AutoPoster desligado — o poster não puxa a fila.")
     return redirect("dashboard")
+
+
+@require_POST
+def editor_ligar(request):
+    ec = EditorController()
+    if not ec.instalado():
+        messages.error(request, "Serviço do editor não instalado. Rode: "
+                                "sudo bash systemd/instalar_servicos.sh")
+        return redirect("edicoes")
+    ok = ec.ligar()
+    messages.success(request, "Editor ligado." if ok else "Falha ao ligar o editor.")
+    return redirect("edicoes")
+
+
+@require_POST
+def editor_desligar(request):
+    ok = EditorController().desligar()
+    messages.success(request, "Editor desligando (termina o vídeo atual)." if ok
+                     else "Falha ao desligar o editor.")
+    return redirect("edicoes")
+
+
+@require_POST
+def autoeditor_toggle(request):
+    ligado = request.POST.get("autoeditor") == "on"
+    EditorController().set_autoeditor(ligado)
+    messages.success(request, "AutoEditor LIGADO — o editor puxa todos os candidatos."
+                     if ligado else "AutoEditor desligado — só edita os selecionados.")
+    return redirect("edicoes")
+
+
+def edicoes_lista(request):
+    candidatos = (Video.objects
+                  .filter(status__in=[Video.Status.DETECTADO, Video.Status.FILA_EDICAO,
+                                      Video.Status.PROCESSANDO])
+                  .select_related("canal").order_by("status", "-criado_em"))
+    return render(request, "core/edicoes.html", {
+        "candidatos": candidatos,
+        "status": SistemaController().status(),
+    })
+
+
+@require_POST
+def editar_video(request, video_id):
+    v = get_object_or_404(Video, id=video_id)
+    n = (Video.objects.filter(id=v.id, status=Video.Status.DETECTADO)
+         .update(status=Video.Status.FILA_EDICAO))
+    if n:
+        messages.success(request, f"{v.video_id} adicionado à fila de edição.")
+    else:
+        messages.error(request, "Não foi possível selecionar (já está na fila/edição?).")
+    return redirect("edicoes")
 
 
 @require_POST

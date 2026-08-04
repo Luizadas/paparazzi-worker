@@ -38,14 +38,15 @@ class Canal(models.Model):
 
 class Video(models.Model):
     class Status(models.TextChoices):
-        DETECTADO = "detectado", "Detectado"
+        DETECTADO = "detectado", "Detectado"        # candidato (passou no filtro), aguardando seleção
+        FILA_EDICAO = "fila_edicao", "Na fila de edição"  # selecionado para editar
         BAIXANDO = "baixando", "Baixando"
         PROCESSANDO = "processando", "Processando"
         PROCESSADO = "processado", "Processado"
         POSTADO = "postado", "Postado"
         ERRO = "erro", "Erro"
 
-    video_id = models.CharField(max_length=64, db_index=True)   # id do YouTube
+    video_id = models.CharField(max_length=64, unique=True)     # id do YouTube (1 linha por vídeo)
     canal = models.ForeignKey(Canal, on_delete=models.SET_NULL, null=True, blank=True,
                               related_name="videos")
     titulo = models.CharField(max_length=300, blank=True)
@@ -70,10 +71,6 @@ class Video(models.Model):
         verbose_name = "Vídeo"
         verbose_name_plural = "Vídeos"
         ordering = ["-criado_em"]
-        constraints = [
-            models.UniqueConstraint(fields=["video_id", "versao_sistema"],
-                                    name="uniq_video_por_versao"),
-        ]
 
     def __str__(self):
         return f"{self.video_id} ({self.status})"
