@@ -46,6 +46,9 @@ class Command(BaseCommand):
 
         EstadoSistema.objects.update_or_create(chave="poster_ligado",
                                                defaults={"valor": "1"})
+        # AutoPoster começa SEMPRE desmarcado a cada (re)início do poster.
+        EstadoSistema.objects.update_or_create(chave="autoposter",
+                                               defaults={"valor": "0"})
         try:
             poster_mod.modo_daemon(modo=opts["modo"], deve_parar=deve_parar)
         finally:

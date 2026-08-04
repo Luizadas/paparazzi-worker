@@ -39,6 +39,12 @@ class PosterController:
     def parada_solicitada(self):
         return self._get(self.CHAVE_PARAR, "0") == "1"
 
+    def autoposter(self):
+        return self._get("autoposter", "0") == "1"
+
+    def set_autoposter(self, ligado):
+        self._set("autoposter", "1" if ligado else "0")
+
     def status(self):
         est = self.estado()
         return {
@@ -47,6 +53,7 @@ class PosterController:
             "estado": est,
             "desligando": est == "deactivating" or (
                 self.parada_solicitada() and est != "inactive"),
+            "autoposter": self.autoposter(),
         }
 
     def ligar(self):

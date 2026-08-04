@@ -777,8 +777,18 @@ def modo_daemon(modo: str = "auto", deve_parar=lambda: False):
     # itens pendentes ficam para a próxima vez. O ÚNICO caso que aguarda é uma
     # postagem em andamento (o selenium do post atual roda até o fim; SIGTERM não
     # o interrompe). Depois de terminar o post atual, para na hora.
+    from comum import db_bridge
     try:
         while not deve_parar():
+            # AutoPoster: só puxa o próximo da fila quando a caixa está marcada.
+            # Desmarcada (padrão), fica ligado porém ocioso (não posta nada).
+            if not db_bridge.autoposter_ligado():
+                _liberar()
+                for _ in range(2):
+                    if deve_parar():
+                        break
+                    time.sleep(1)
+                continue
             item = reivindicar_proximo()
             if item:
                 _adquirir()

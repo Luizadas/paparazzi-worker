@@ -81,6 +81,15 @@ def poster_desligar(request):
 
 
 @require_POST
+def autoposter_toggle(request):
+    ligado = request.POST.get("autoposter") == "on"
+    PosterController().set_autoposter(ligado)
+    messages.success(request, "AutoPoster LIGADO — o poster vai puxar a fila." if ligado
+                     else "AutoPoster desligado — o poster não puxa a fila.")
+    return redirect("dashboard")
+
+
+@require_POST
 def sistema_ligar(request):
     SistemaController().ligar_tudo()
     messages.success(request, "Sistema LIGADO — watcher e poster no ar.")

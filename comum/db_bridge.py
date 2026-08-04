@@ -181,6 +181,33 @@ def contar_pendentes():
         return 0
 
 
+# -- estado do sistema (flags simples) --------------------------------------
+def get_estado(chave, default=""):
+    if not _setup_django():
+        return default
+    try:
+        from core.models import EstadoSistema
+        obj = EstadoSistema.objects.filter(chave=chave).first()
+        return obj.valor if obj else default
+    except Exception:
+        return default
+
+
+def set_estado(chave, valor):
+    if not _setup_django():
+        return
+    try:
+        from core.models import EstadoSistema
+        EstadoSistema.objects.update_or_create(chave=chave, defaults={"valor": str(valor)})
+    except Exception as e:
+        print(f"⚠️  db_bridge.set_estado: {e}")
+
+
+def autoposter_ligado():
+    """AutoPoster: quando ligado, o poster puxa o próximo da fila. Default '0'."""
+    return get_estado("autoposter", "0") == "1"
+
+
 # -- controle de LLM (para o shutdown gracioso) -----------------------------
 def llm_adquirir(consumidor, garantir=True):
     if not _setup_django():

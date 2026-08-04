@@ -93,6 +93,16 @@
           <form method="post" action="{% url 'poster_ligar' %}">{% csrf_token %}
             <button class="btn-on">Ligar poster</button></form>
         {% endif %}
+        {% if status.poster.instalado %}
+          <form method="post" action="{% url 'autoposter_toggle' %}" style="margin-top:8px">
+            {% csrf_token %}
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer">
+              <input type="checkbox" name="autoposter" onchange="this.form.submit()"
+                     {% if status.poster.autoposter %}checked{% endif %}>
+              <span>AutoPoster</span>
+            </label>
+          </form>
+        {% endif %}
       </div>
 
       <div style="flex:1; text-align:right">
