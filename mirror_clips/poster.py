@@ -43,8 +43,6 @@ MIRROR_OUTPUT_DIR    = os.getenv("MIRROR_OUTPUT_DIR", "/mnt/paparazzi/mirror_cli
 DEFAULT_CAPTION      = os.getenv("DEFAULT_CAPTION", "🔥 {titulo} #viral #shorts #trending #fyp")
 DEFAULT_HASHTAGS     = os.getenv("DEFAULT_HASHTAGS", "#viral #fyp #shorts #trending")
 
-QUEUE_FILE = Path(__file__).parent / "fila_postagem.json"
-
 TIKTOK_API_BASE = "https://open.tiktokapis.com/v2"
 
 # ─────────────────────────────────────────────
@@ -64,13 +62,12 @@ def gerar_caption(titulo: str = "") -> str:
 
 
 # ─────────────────────────────────────────────
-#  FILA DE POSTAGEM  (compartilhada entre o processador e o postador)
+#  FILA DE POSTAGEM  (fonte única = Postgres, via comum/db_bridge)
 # ─────────────────────────────────────────────
+# A fila vive no banco (model Post): pendente → postando → publicado/falhou.
+# O claim é atômico (SELECT ... FOR UPDATE SKIP LOCKED), então processador e
+# postador rodam em paralelo sem duplo-claim — sem arquivo/lock local.
 
-import fcntl
-from contextlib import contextmanager
-
-LOCK_FILE = Path(__file__).parent / ".fila.lock"
 # Sinal criado pelo orquestrador quando o processamento termina; o poster --watch
 # drena o restante da fila e então encerra.
 STOP_FLAG = Path(__file__).parent / ".processamento_concluido"
@@ -78,82 +75,28 @@ STOP_FLAG = Path(__file__).parent / ".processamento_concluido"
 POST_GAP = int(os.getenv("POST_GAP", "15"))
 
 
-@contextmanager
-def _lock_fila():
-    """Trava exclusiva entre processos para ler/gravar a fila com segurança."""
-    with open(LOCK_FILE, "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
-
-
-def carregar_fila() -> list:
-    if not QUEUE_FILE.exists():
-        return []
-    try:
-        with open(QUEUE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
-
-def salvar_fila(fila: list):
-    with open(QUEUE_FILE, "w", encoding="utf-8") as f:
-        json.dump(fila, f, ensure_ascii=False, indent=2)
-
 def adicionar_na_fila(video_path: str, titulo: str = "", caption: str = ""):
-    """Chamado pelo coletor.py ao finalizar um vídeo processado.
-    'caption' é a legenda gerada por IA; se vazia, o poster usa o template padrão."""
-    with _lock_fila():
-        fila = carregar_fila()
-        fila.append({
-            "video_path": str(video_path),
-            "titulo": titulo,
-            "caption": caption or "",
-            "adicionado_em": datetime.now().isoformat(),
-            "status": "pendente",
-        })
-        salvar_fila(fila)
-    log(f"📋 Vídeo enfileirado para postagem: {video_path}")
+    """Chamado pelo coletor.py ao finalizar um vídeo: enfileira no banco (Post
+    'pendente'). 'caption' é a legenda gerada por IA."""
+    from comum import db_bridge
+    ok = db_bridge.enfileirar(str(video_path), titulo=titulo, caption=caption or "")
+    if ok:
+        log(f"📋 Vídeo enfileirado para postagem (banco): {video_path}")
+    else:
+        log(f"⚠️  Não consegui enfileirar no banco: {video_path}")
 
-def marcar_fila_status(video_path: str, status: str):
-    with _lock_fila():
-        fila = carregar_fila()
-        for item in fila:
-            if item["video_path"] == str(video_path):
-                item["status"] = status
-                item["atualizado_em"] = datetime.now().isoformat()
-        salvar_fila(fila)
-    # Espelha no banco de controle (best-effort).
-    try:
-        from comum import db_bridge
-        db_bridge.marcar_post_status(str(video_path), status)
-    except Exception:
-        pass
 
 def reivindicar_proximo():
-    """Pega ATOMICAMENTE o próximo item 'pendente', marca 'postando' e o retorna
-    (ou None se não houver). Permite que processador e postador rodem em paralelo."""
-    reivindicado = None
-    with _lock_fila():
-        fila = carregar_fila()
-        for item in fila:
-            if item.get("status") == "pendente":
-                item["status"] = "postando"
-                item["atualizado_em"] = datetime.now().isoformat()
-                salvar_fila(fila)
-                reivindicado = item
-                break
-    # Espelha 'postando' no banco (best-effort) para o painel mostrar o item atual.
-    if reivindicado:
-        try:
-            from comum import db_bridge
-            db_bridge.marcar_post_status(str(reivindicado["video_path"]), "postando")
-        except Exception:
-            pass
-    return reivindicado
+    """Reivindica ATOMICAMENTE o próximo pendente no banco e o marca 'postando'.
+    Retorna dict {post_id, video_path, titulo, caption} ou None se a fila vazia."""
+    from comum import db_bridge
+    return db_bridge.reivindicar_proximo_post()
 
+
+def marcar_fila_status(video_path: str, status: str, post_id: int = None):
+    """Atualiza o status do post no banco (publicado/falhou/postando)."""
+    from comum import db_bridge
+    db_bridge.marcar_post_status(str(video_path), status, post_id=post_id)
 
 # ─────────────────────────────────────────────
 #  MODO 1: TIKTOK CONTENT POSTING API OFICIAL
@@ -736,31 +679,23 @@ def postar_video(video_path: str, titulo: str = "", modo: str = "auto", caption:
 
 
 def processar_fila(modo: str = "auto"):
-    """Processa todos os vídeos pendentes na fila de postagem."""
-    fila = carregar_fila()
-    pendentes = [item for item in fila if item.get("status") == "pendente"]
-
-    if not pendentes:
+    """Posta todos os pendentes da fila (banco), de forma serial."""
+    from comum import db_bridge
+    n = db_bridge.contar_pendentes()
+    if not n:
         log("📋 Fila de postagem vazia. Nada a fazer.")
         return
+    log(f"📋 {n} vídeo(s) na fila para postar.")
 
-    log(f"📋 {len(pendentes)} vídeo(s) na fila para postar.")
-
-    for item in pendentes:
+    while True:
+        item = reivindicar_proximo()
+        if not item:
+            break
         video_path = item["video_path"]
-        titulo = item.get("titulo", "")
-        caption = item.get("caption", "")
-
-        marcar_fila_status(video_path, "processando")
-        sucesso = postar_video(video_path, titulo, modo, caption)
-
-        if sucesso:
-            marcar_fila_status(video_path, "publicado")
-        else:
-            marcar_fila_status(video_path, "falhou")
-
-        # Aguarda entre postagens para não sobrecarregar
-        time.sleep(30)
+        sucesso = postar_video(video_path, item.get("titulo", ""), modo, item.get("caption", ""))
+        marcar_fila_status(video_path, "publicado" if sucesso else "falhou",
+                           post_id=item.get("post_id"))
+        time.sleep(30)   # evita sobrecarga entre postagens
 
     log("\n✅ Processamento da fila concluído.")
 
@@ -788,7 +723,8 @@ def modo_watch(modo: str = "auto"):
                 titulo = item.get("titulo", "")
                 caption = item.get("caption", "")
                 sucesso = postar_video(video_path, titulo, modo, caption)
-                marcar_fila_status(video_path, "publicado" if sucesso else "falhou")
+                marcar_fila_status(video_path, "publicado" if sucesso else "falhou",
+                                   post_id=item.get("post_id"))
                 time.sleep(POST_GAP)   # pausa anti-spam (o próximo já processa em paralelo)
             else:
                 # Nada pendente agora
@@ -837,6 +773,10 @@ def modo_daemon(modo: str = "auto", deve_parar=lambda: False):
                 pass
             segurando_llm = False
 
+    # REGRA DE PARADA: desligar é imediato. A fila NÃO segura o desligamento —
+    # itens pendentes ficam para a próxima vez. O ÚNICO caso que aguarda é uma
+    # postagem em andamento (o selenium do post atual roda até o fim; SIGTERM não
+    # o interrompe). Depois de terminar o post atual, para na hora.
     try:
         while not deve_parar():
             item = reivindicar_proximo()
@@ -845,13 +785,18 @@ def modo_daemon(modo: str = "auto", deve_parar=lambda: False):
                 video_path = item["video_path"]
                 titulo = item.get("titulo", "")
                 caption = item.get("caption", "")
-                sucesso = postar_video(video_path, titulo, modo, caption)
-                marcar_fila_status(video_path, "publicado" if sucesso else "falhou")
-                time.sleep(POST_GAP)
+                sucesso = postar_video(video_path, titulo, modo, caption)  # roda até o fim
+                marcar_fila_status(video_path, "publicado" if sucesso else "falhou",
+                                   post_id=item.get("post_id"))
+                if deve_parar():
+                    break                # parada pedida → não pega novo item (fila fica pendente)
+                for _ in range(POST_GAP):    # pausa anti-spam, interrompível
+                    if deve_parar():
+                        break
+                    time.sleep(1)
             else:
                 _liberar()               # fila ociosa → solta a LLM
-                # dorme em pequenos passos para responder rápido ao desligar
-                for _ in range(3):
+                for _ in range(3):       # aguarda novos, respondendo rápido ao desligar
                     if deve_parar():
                         break
                     time.sleep(1)

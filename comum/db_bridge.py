@@ -94,22 +94,29 @@ def registrar_post_pendente(arquivo, caption="", versao="", privacidade="SELF_ON
         return None
 
 
-def marcar_post_status(arquivo, status, url=""):
-    """Atualiza o Post do arquivo para publicado/falhou/postando. Em 'publicado',
-    carimba postado_em (base da retenção de 24h) e marca o Video como postado."""
+def marcar_post_status(arquivo, status, url="", post_id=None):
+    """Atualiza o Post para publicado/falhou/postando. Em 'publicado', carimba
+    postado_em (base da retenção de 24h) e marca o Video como postado.
+    Se post_id for informado, atualiza esse post diretamente (mais preciso)."""
     if not _setup_django():
         return None
     try:
         from django.utils import timezone
         from core.models import Video, Post
-        vid = video_id_de(arquivo)
-        video = (Video.objects.filter(arquivo_local=arquivo).first()
-                 or Video.objects.filter(video_id=vid).order_by("-criado_em").first())
-        if not video:
-            return None
-        post = video.posts.order_by("-criado_em").first()
-        if not post:
-            post = Post.objects.create(video=video)
+        if post_id is not None:
+            post = Post.objects.select_related("video").filter(id=post_id).first()
+            if not post:
+                return None
+            video = post.video
+        else:
+            vid = video_id_de(arquivo)
+            video = (Video.objects.filter(arquivo_local=arquivo).first()
+                     or Video.objects.filter(video_id=vid).order_by("-criado_em").first())
+            if not video:
+                return None
+            post = video.posts.order_by("-criado_em").first()
+            if not post:
+                post = Post.objects.create(video=video)
         mapa = {"publicado": Post.Status.PUBLICADO, "falhou": Post.Status.FALHOU,
                 "postando": Post.Status.POSTANDO}
         post.status = mapa.get(status, post.status)
@@ -123,6 +130,55 @@ def marcar_post_status(arquivo, status, url=""):
     except Exception as e:
         print(f"⚠️  db_bridge.marcar_post_status: {e}")
         return None
+
+
+# -- FILA DE POSTAGEM no banco (fonte única) --------------------------------
+def enfileirar(arquivo, titulo="", caption="", versao="", privacidade="SELF_ONLY"):
+    """Coloca o vídeo na fila = cria um Post 'pendente' no banco (idempotente)."""
+    return registrar_post_pendente(arquivo, caption=caption, versao=versao,
+                                   privacidade=privacidade)
+
+
+def reivindicar_proximo_post():
+    """Reivindica ATOMICAMENTE o próximo Post 'pendente' (o mais antigo), marca
+    'postando' e o retorna. Usa SELECT ... FOR UPDATE SKIP LOCKED para permitir
+    concorrência sem duplo-claim. Retorna dict {post_id, video_path, titulo,
+    caption} ou None se a fila estiver vazia (ou o banco indisponível)."""
+    if not _setup_django():
+        return None
+    try:
+        from django.db import transaction
+        from core.models import Post
+        with transaction.atomic():
+            post = (Post.objects.select_for_update(skip_locked=True)
+                    .filter(status=Post.Status.PENDENTE)
+                    .select_related("video")
+                    .order_by("criado_em")
+                    .first())
+            if not post:
+                return None
+            post.status = Post.Status.POSTANDO
+            post.save(update_fields=["status", "atualizado_em"])
+            return {
+                "post_id": post.id,
+                "video_path": post.video.arquivo_local,
+                "titulo": post.video.titulo,
+                "caption": post.caption,
+                "status": "postando",
+            }
+    except Exception as e:
+        print(f"⚠️  db_bridge.reivindicar_proximo_post: {e}")
+        return None
+
+
+def contar_pendentes():
+    if not _setup_django():
+        return 0
+    try:
+        from core.models import Post
+        return Post.objects.filter(status=Post.Status.PENDENTE).count()
+    except Exception:
+        return 0
 
 
 # -- controle de LLM (para o shutdown gracioso) -----------------------------

@@ -690,16 +690,10 @@ def processar_video_whisper_nativo(video_path):
         except Exception as e:
             print(f"⚠️  espelho no banco falhou (ignorado): {e}")
 
-        # Enfileira para postagem automática (com legenda gerada por IA)
+        # Enfileira para postagem no BANCO (fila = model Post 'pendente').
         if POSTER_DISPONIVEL and os.path.exists(final_output):
             legenda_ia = gerar_legenda_ia(texto_transcricao, titulo_original="")
             adicionar_na_fila(final_output, titulo, caption=legenda_ia)
-            try:
-                from comum import db_bridge
-                db_bridge.registrar_post_pendente(
-                    final_output, caption=legenda_ia, versao=SISTEMA_VERSAO)
-            except Exception:
-                pass
 
     except subprocess.CalledProcessError as e:
         print(f"❌ Erro ao processar FFmpeg final: {e.stderr.decode('utf-8', errors='ignore')}")
