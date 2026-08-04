@@ -22,7 +22,9 @@ echo "==> Watcher e Poster NÃO iniciam no boot (quem liga/desliga é o painel)"
 systemctl disable paparazzi-watcher.service 2>/dev/null || true
 systemctl disable paparazzi-poster.service 2>/dev/null || true
 
-echo "==> Instalando regra polkit (painel controla watcher/poster/ollama sem sudo)"
+echo "==> Instalando autorização do polkit (painel controla os serviços sem sudo)"
+# Formato .rules (JavaScript) — polkit >= 0.106
+mkdir -p /etc/polkit-1/rules.d
 cat > /etc/polkit-1/rules.d/49-paparazzi.rules <<'EOF'
 polkit.addRule(function(action, subject) {
   if (action.id == "org.freedesktop.systemd1.manage-units" &&
@@ -35,6 +37,18 @@ polkit.addRule(function(action, subject) {
     }
   }
 });
+EOF
+# Formato .pkla (pklocalauthority) — polkit <= 0.105 (Ubuntu 20.04 e afins), que
+# IGNORA os .rules. Não dá para restringir por unit neste formato, então vale para
+# manage-units em geral (aceitável em máquina de uso pessoal do luiz).
+mkdir -p /etc/polkit-1/localauthority/50-local.d
+cat > /etc/polkit-1/localauthority/50-local.d/49-paparazzi.pkla <<'EOF'
+[Paparazzi: luiz controla os servicos sem senha]
+Identity=unix-user:luiz
+Action=org.freedesktop.systemd1.manage-units
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
 EOF
 
 echo

@@ -45,6 +45,13 @@ EOF
 ```
 
 Assim `systemctl start/stop` desses serviços funciona sem `sudo`.
+
+> **polkit ≤ 0.105 (Ubuntu 20.04 e afins):** essa versão IGNORA os `.rules` (JS).
+> O `instalar_servicos.sh` também grava o formato antigo `.pkla` em
+> `/etc/polkit-1/localauthority/50-local.d/49-paparazzi.pkla`, que é o que funciona
+> nessas versões. Esse formato não restringe por unit (vale para `manage-units` em
+> geral) — ok em máquina de uso pessoal.
+
 Alternativa: definir `SYSTEMCTL="sudo systemctl"` no `.env` e liberar no sudoers.
 
 ## Verificar
