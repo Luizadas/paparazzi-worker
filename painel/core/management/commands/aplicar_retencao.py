@@ -7,6 +7,7 @@ Rodado periodicamente pelo systemd timer (paparazzi-retencao.timer).
 """
 
 from django.core.management.base import BaseCommand
+from django.db.utils import OperationalError
 
 from core.services import RetencaoService
 
@@ -18,7 +19,15 @@ class Command(BaseCommand):
         parser.add_argument("--dry", action="store_true", help="Simula, sem apagar.")
 
     def handle(self, *args, **opts):
-        resultados = RetencaoService().aplicar(dry_run=opts["dry"])
+        try:
+            resultados = RetencaoService().aplicar(dry_run=opts["dry"])
+        except OperationalError as e:
+            # Ex.: rodou no boot antes do Postgres subir. Não é erro fatal —
+            # o timer horário roda de novo quando o banco estiver no ar.
+            self.stdout.write(self.style.WARNING(
+                f"Banco indisponível agora ({str(e).splitlines()[0]}). "
+                "Pulando; o próximo ciclo tenta de novo."))
+            return
         if not resultados:
             self.stdout.write("Nada a fazer — nenhum vídeo expirado.")
             return
