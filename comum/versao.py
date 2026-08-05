@@ -12,13 +12,15 @@ import re
 from datetime import datetime
 
 # Bump a cada mudança relevante na LÓGICA de processamento (não em bug trivial).
-SISTEMA_VERSAO = "1.2.0"
+SISTEMA_VERSAO = "1.3.0"
 
 # Histórico curto — o que mudou em cada versão da lógica de processamento.
 CHANGELOG = {
     "1.0.0": "Mirror base: blur localizado por OCR, meme no topo, whisper medium.",
     "1.1.0": "Legenda 1 linha, fonte adaptativa, blur sempre (sem tarja preta).",
     "1.2.0": "Detecta tarja preta full-width e faz blur de ponta a ponta (altura real).",
+    "1.3.0": ("Blur medido em pixels (40 frames/720p): faixa exata do texto, tarja "
+              "só se for lisa, X espelhado após o hflip, meme só se for estático."),
 }
 
 # Onde gravamos o log de proveniência (append-only).
@@ -54,6 +56,10 @@ def registrar_processamento(nome_arquivo, deteccao=None, saida=None, extra=None)
             "tem_legenda": bool(deteccao.get("tem_legenda")),
             "faixa_total": bool(deteccao.get("faixa_total")),
             "cy": deteccao.get("cy"),
+            # Faixa coberta pelo blur (frações y0,y1,x0,x1) — é o que precisamos
+            # olhar quando um vídeo sai com blur no lugar/tamanho errado.
+            "faixa": [deteccao.get(k) for k in ("y0", "y1", "x0", "x1")]
+                     if deteccao.get("tem_legenda") else None,
             "meme": (meme or {}).get("texto") if isinstance(meme, dict) else None,
             "saida": saida,
         }

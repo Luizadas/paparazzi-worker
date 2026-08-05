@@ -36,6 +36,15 @@ LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-r1:latest")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")   # tiny/base/small/medium/large-v3
 _FW_MODEL = None
 
+# Análise da legenda original (blur). Amostramos MUITOS frames em resolução boa
+# para medir nos pixels a faixa exata a cobrir; o OCR (caro, ~4s/frame em CPU)
+# roda só num subconjunto e em resolução menor — ele só precisa dizer ONDE, mais
+# ou menos, está o texto; quem fecha a conta é a medição em pixels.
+N_FRAMES_PIXEL = int(os.getenv("BLUR_FRAMES", "40"))    # frames p/ medir pixels
+N_FRAMES_OCR = int(os.getenv("BLUR_FRAMES_OCR", "16"))  # frames p/ o OCR
+LARGURA_ANALISE = 720   # largura dos frames analisados
+LARGURA_OCR = 540       # largura usada no OCR
+
 
 def _get_whisper():
     """Carrega o modelo faster-whisper uma vez (CPU, int8)."""
@@ -141,111 +150,360 @@ def corrigir_texto_ia(texto: str) -> str:
         return base
 
 
-def _detectar_meme_topo(caixas_topo, n_frames):
+def _palavras_chave(texto):
+    """Conjunto de palavras (só letras, >=3 chars) de um texto — usado para medir
+    se o OCR leu a MESMA frase em frames diferentes."""
+    limpo = re.sub(r"[^a-zà-ú ]", " ", (texto or "").lower())
+    return {w for w in limpo.split() if len(w) >= 3}
+
+
+def _detectar_meme_topo(caixas, n_frames):
     """
     Detecta uma FRASE DE MEME estática no topo do vídeo (aquele texto de contexto
-    que forma a piada). Precisa ser persistente (aparece na maioria dos frames) e
-    ter conteúdo de frase (>=8 chars, >=2 palavras) — assim ignora logos/marcas.
+    que forma a piada). Não basta "ter texto no topo": se o topo é VÍDEO AO VIVO,
+    o OCR lê lixo diferente em cada frame (placar, camisa, painel...) e isso já
+    gerou blur gigante no lugar errado. Então exigimos:
+      • persistência (aparece na maioria dos frames);
+      • conteúdo de frase (>=8 chars, >=3 palavras, quase tudo letras);
+      • ESTABILIDADE: a mesma frase (mesmas palavras) relida em >=50% dos frames;
+      • caixa compacta (uma frase de 1-3 linhas, não meia tela).
+    A confirmação final (região realmente ESTÁTICA nos pixels) é feita depois em
+    detectar_legenda_ocr via _texto_sobreposto_estatico().
+    `caixas` = lista de dicts (x0,x1,y0,y1,yc,idx,txt,conf).
     Retorna {'texto', 'x0','x1','y0','y1'} (frações) ou None.
     """
-    if len(caixas_topo) < 2:
+    if len(caixas) < 2:
         return None
     por_frame = {}
-    for (x0, x1, y0, y1, yc, idx, t) in caixas_topo:
-        por_frame.setdefault(idx, []).append((y0, x0, t))
+    for c in caixas:
+        por_frame.setdefault(c["idx"], []).append((c["y0"], c["x0"], c["txt"]))
     if len(por_frame) < max(2, int(0.4 * n_frames)):
         return None   # não é persistente → provavelmente não é meme
 
     def texto_do_frame(itens):
         return " ".join(z[2] for z in sorted(itens, key=lambda z: (round(z[0], 2), z[1])))
 
-    melhor_idx = max(por_frame, key=lambda i: len(texto_do_frame(por_frame[i])))
-    texto = texto_do_frame(por_frame[melhor_idx])
-    if len(texto) < 8 or len(texto.split()) < 2:
+    textos = {i: texto_do_frame(v) for i, v in por_frame.items()}
+    melhor_idx = max(textos, key=lambda i: len(textos[i]))
+    texto = textos[melhor_idx]
+    if len(texto) < 8 or len(texto.split()) < 3:
         return None   # curto demais → provável logo/marca
 
-    xs0 = [b[0] for b in caixas_topo]; xs1 = [b[1] for b in caixas_topo]
-    ys0 = [b[2] for b in caixas_topo]; ys1 = [b[3] for b in caixas_topo]
+    # Quase tudo letras: frase de meme não é placar/número ("858, onal "fpa os,").
+    letras = sum(c.isalpha() or c.isspace() for c in texto)
+    if letras / max(1, len(texto)) < 0.80 or sum(c.isdigit() for c in texto) > 2:
+        return None
+
+    # ESTABILIDADE: a mesma frase tem que reaparecer (>=60% das palavras em comum)
+    # na maioria dos frames. Vídeo ao vivo no topo falha aqui.
+    ref = _palavras_chave(texto)
+    if len(ref) < 3:
+        return None
+    def parecido(outro):
+        p = _palavras_chave(outro)
+        return bool(p) and len(ref & p) / len(ref | p) >= 0.6
+    iguais = sum(1 for t in textos.values() if parecido(t))
+    if iguais < max(2, int(0.5 * n_frames)):
+        return None
+
+    # Caixa: só os frames que leram a MESMA frase (evita lixo esticando a caixa).
+    idx_ok = {i for i, t in textos.items() if parecido(t)}
+    grupo = [b for b in caixas if b["idx"] in idx_ok] or caixas
+    xs0 = [b["x0"] for b in grupo]; xs1 = [b["x1"] for b in grupo]
+    y0 = min(b["y0"] for b in grupo); y1 = max(b["y1"] for b in grupo)
+    if (y1 - y0) > 0.16:
+        return None   # "frase" espalhada demais → não é um bloco de meme
+
     return {
         "texto": texto,
         "x0": round(max(0.0, min(xs0) - 0.02), 4),
         "x1": round(min(1.0, max(xs1) + 0.02), 4),
-        "y0": round(max(0.0, min(ys0) - 0.01), 4),
-        "y1": round(min(1.0, max(ys1) + 0.01), 4),
+        "y0": round(max(0.0, y0 - 0.01), 4),
+        "y1": round(min(1.0, y1 + 0.01), 4),
     }
 
 
-def _detectar_tarja_fullwidth(paths, y0f, y1f):
-    """
-    Procura, atrás da legenda original, uma TARJA PRETA sólida que atravessa a tela
-    de ponta a ponta (lateral a lateral).
+# ─────────────────────────────────────────────
+#  MEDIÇÃO EM PIXELS da faixa que o blur vai cobrir
+#
+#  O OCR dá a banda APROXIMADA do texto. Antes de aplicar o blur, medimos os
+#  pixels de MUITOS frames para saber a faixa REAL — nem sobrando (blur gigante
+#  cobrindo cena/legenda) nem faltando (texto vazando pelas beiradas).
+# ─────────────────────────────────────────────
 
-    Método robusto a texto vazado nas pontas: uma LINHA pertence à tarja quando
-    >=75% da sua largura é quase-preta (o texto branco/colorido ocupa só uma fração
-    da linha). Um bloco contíguo dessas linhas, persistente entre frames e sobrepondo
-    a banda da legenda, É a tarja. Retorna a altura real (ytopo, ybase) em frações
-    0..1 — para o blur cobrir de x=0 a x=W exatamente nessa altura — ou None.
-    """
-    contagem = None   # por linha: em quantos frames aquela linha é "linha de tarja"
-    Href = None
-    nframes = 0
+def _carregar_cinza(paths):
+    """Empilha os frames em tons de cinza como (n, H, W); None se não der."""
+    imgs = []
     for p in paths:
         try:
-            g = np.asarray(Image.open(p).convert("L"))
+            imgs.append(np.asarray(Image.open(p).convert("L"), dtype=np.float32))
         except Exception:
             continue
-        H, W = g.shape[:2]
-        if W < 10:
-            continue
-        if Href is None:
-            Href = H
-            contagem = np.zeros(H, dtype=int)
-        if H != Href:
-            continue
-        dark_frac = (g < 50).mean(axis=1)          # fração escura de cada linha
-        contagem += (dark_frac >= 0.75).astype(int)
-        nframes += 1
-    if not nframes or Href is None:
+    if len(imgs) < 3:
         return None
+    forma = imgs[0].shape[:2]
+    imgs = [g for g in imgs if g.shape[:2] == forma]
+    return np.stack(imgs) if len(imgs) >= 3 else None
 
-    bar = contagem >= max(2, int(0.5 * nframes))    # linha de tarja na maioria dos frames
-    if not bar.any():
-        return None
 
-    # limita à janela ao redor da legenda (evita barras pretas de UI/rodapé alheias)
-    ytop_lim = max(0, int((y0f - 0.12) * Href))
-    ybot_lim = min(Href, int((y1f + 0.12) * Href))
-    idx = np.where(bar)[0]
-    idx = idx[(idx >= ytop_lim) & (idx < ybot_lim)]
+def _perfis_linha(A):
+    """
+    Perfis por LINHA da imagem (mediana entre os frames):
+      mean — brilho médio da linha
+      std  — variação DENTRO da linha (tarja lisa ≈ 0; cena com conteúdo ≫ 0)
+      dark — fração de pixels escuros
+      edge — densidade de bordas horizontais = evidência de TEXTO na linha
+    Estrutura (mean/std/dark) usa MEDIANA: é o que vale na maior parte do vídeo.
+    Texto usa PERCENTIL 70: a legenda muda de frase e some entre cues — se
+    exigíssemos a mediana, linhas com texto em "só" 40% dos frames escapariam do
+    blur e o texto original vazaria.
+    """
+    d = np.abs(np.diff(A, axis=2))
+    return {
+        "mean": np.median(A.mean(axis=2), axis=0),
+        "std":  np.median(A.std(axis=2), axis=0),
+        "dark": np.median((A < 50).mean(axis=2), axis=0),
+        "edge": np.percentile((d > 40).mean(axis=2), 70, axis=0),
+    }
+
+
+def _maior_bloco(mascara, gap, alvo):
+    """Maior bloco contíguo de True (tolerando buracos de até `gap`) que mais se
+    sobrepõe ao intervalo `alvo` (a0, a1). Retorna (ini, fim) ou None."""
+    idx = np.where(mascara)[0]
     if idx.size == 0:
         return None
-
-    # maior bloco contíguo (tolera buracos de até 2 px) que sobreponha a legenda
-    grupos = np.split(idx, np.where(np.diff(idx) > 2)[0] + 1)
-    ya = y0f * Href; yb = y1f * Href
-    melhor, melhor_ov = None, -1
-    for gpo in grupos:
-        top, base = int(gpo[0]), int(gpo[-1])
-        ov = min(base, yb) - max(top, ya)          # sobreposição com a banda da legenda
+    grupos = np.split(idx, np.where(np.diff(idx) > gap)[0] + 1)
+    a0, a1 = alvo
+    melhor, melhor_ov = None, -1e9
+    for g in grupos:
+        ini, fim = int(g[0]), int(g[-1])
+        ov = min(fim, a1) - max(ini, a0)          # sobreposição com o alvo
         if ov > melhor_ov:
-            melhor, melhor_ov = (top, base), ov
-    if melhor is None or (melhor[1] - melhor[0]) < 4:
-        return None
-    top, base = melhor
-    return (top / Href, (base + 1) / Href)
+            melhor, melhor_ov = (ini, fim), ov
+    return melhor
 
 
-def detectar_legenda_ocr(video_path, n=16):
+def _medir_faixa(A, y0f, y1f):
     """
-    Detecta via OCR a legenda QUEIMADA do vídeo ORIGINAL (antes do espelhamento):
-    se existe, ONDE está (caixa exata) e o ESTILO (barra preta vs texto solto).
+    Mede nos PIXELS a faixa que o blur precisa cobrir, partindo da banda
+    aproximada do OCR (y0f..y1f, frações do frame).
+
+    Retorna dict ou None (aí o chamador fica com a banda do OCR):
+      y0, y1      — topo/base da FAIXA a cobrir (frações do frame)
+      cy_texto    — centro do TEXTO em si (é onde a nossa legenda deve ficar; o
+                    centro da faixa pode estar deslocado quando ela cresce pela
+                    tarja preta em volta)
+      x0, x1      — extensão horizontal real do texto (frações)
+      faixa_total — True só quando o texto está sobre uma TARJA LISA de ponta a
+                    ponta (aí o blur vai de x=0 a x=W); False cobre só o texto.
+    """
+    n, H, W = A.shape
+    prof = _perfis_linha(A)
+    lin_ocr = (int(y0f * H), int(y1f * H))
+    jan0 = max(0, lin_ocr[0] - int(0.04 * H))
+    jan1 = min(H, lin_ocr[1] + int(0.04 * H))
+    if jan1 - jan0 < 6:
+        return None
+
+    # 1) Linhas de TEXTO, com histerese: um limiar FORTE acha o miolo do texto e
+    #    um limiar FRACO estende até onde a evidência morre (topo dos acentos, pé
+    #    das descidas, 2ª linha). Só o forte cortaria as bordas e o texto original
+    #    vazaria por cima/baixo do blur.
+    janela = prof["edge"][jan0:jan1]
+    pico = float(janela.max())
+    forte = max(0.006, 0.35 * pico)
+    fraco = max(0.003, 0.15 * pico)
+    gap = max(3, int(0.008 * H))          # tolera o vão entre linhas de texto
+    miolo = np.zeros(H, dtype=bool)
+    miolo[jan0:jan1] = janela >= forte
+    bloco = _maior_bloco(miolo, gap, lin_ocr)
+    if bloco is None:
+        return None
+    ytop, ybase = bloco
+    if ybase - ytop < 3:
+        return None
+    # estende pelo limiar FRACO (mesma tolerância de vão: uma única linha fraca no
+    # meio de duas linhas de legenda não pode travar o crescimento)
+    debil = np.zeros(H, dtype=bool)
+    debil[jan0:jan1] = janela >= fraco
+    bloco_fraco = _maior_bloco(debil, gap, (ytop, ybase))
+    if bloco_fraco:
+        ytop = min(ytop, bloco_fraco[0]); ybase = max(ybase, bloco_fraco[1])
+
+    cy_texto = (ytop + ybase + 1) / 2 / H     # centro do texto, antes da tarja
+
+    # 2) Linhas de TARJA: lisas de ponta a ponta (std baixo) e escuras. A cena do
+    #    vídeo, mesmo escura, tem std alto — é isso que antes fazia a "tarja"
+    #    engolir metade da tela.
+    barra = (prof["std"] < 20) & (prof["dark"] >= 0.7)
+
+    # 3) Cresce a faixa para dentro da tarja (bordas da barra), com teto. Cobrir
+    #    preto liso não muda nada na imagem e garante que nada de texto sobre.
+    teto = max(4, int(0.045 * H))
+    cima = 0
+    while cima < teto and ytop - 1 >= 0 and barra[ytop - 1]:
+        ytop -= 1; cima += 1
+    baixo = 0
+    while baixo < teto and ybase + 1 < H and barra[ybase + 1]:
+        ybase += 1; baixo += 1
+    faixa_total = (cima + baixo) >= max(3, int(0.004 * H)) and \
+                  float(np.median(prof["dark"][ytop:ybase + 1])) >= 0.6
+
+    # 4) Extensão horizontal real do texto (colunas com borda dentro da faixa).
+    #    Percentil alto entre frames: cada frase ocupa colunas diferentes, então a
+    #    mediana zeraria tudo fora do centro e o blur ficaria estreito demais.
+    sub = A[:, ytop:ybase + 1, :]
+    dcol = np.percentile((np.abs(np.diff(sub, axis=2)) > 40).mean(axis=1), 90, axis=0)
+    cols = np.where(dcol >= max(0.02, 0.30 * float(dcol.max() or 0)))[0]
+    if cols.size >= 2:
+        x0 = float(np.percentile(cols, 1)) / W
+        x1 = float(np.percentile(cols, 99) + 1) / W
+    else:
+        x0, x1 = 0.0, 1.0
+
+    # 5) Teto de altura: uma faixa de legenda não passa de ~20% da tela. Se passou,
+    #    a medição saiu do controle → recorta em torno do centro do OCR.
+    if (ybase - ytop) / H > 0.20:
+        centro = (lin_ocr[0] + lin_ocr[1]) // 2
+        meia = int(0.10 * H)
+        ytop = max(0, centro - meia); ybase = min(H - 1, centro + meia)
+
+    m = max(1, int(0.005 * H))
+    return {
+        "y0": round(max(0.0, (ytop - m) / H), 4),
+        "y1": round(min(1.0, (ybase + 1 + m) / H), 4),
+        "cy_texto": round(cy_texto, 4),
+        "x0": round(max(0.0, x0), 4),
+        "x1": round(min(1.0, x1), 4),
+        "faixa_total": bool(faixa_total),
+    }
+
+
+def _escolher_banda(caixas, A, n_frames):
+    """
+    Escolhe, entre as faixas horizontais onde o OCR viu texto, qual é a LEGENDA
+    QUEIMADA do vídeo — e não logo de camisa/parede/marca d'água.
+
+    Contar caixas não basta e já pôs o blur no lugar errado: um vídeo com imagem
+    fixa embaixo tem "CIMED"/"StockCar" em TODOS os frames, e a cena ao vivo rende
+    dezenas de leituras de patrocinador. O que separa a legenda do resto:
+
+      • CONFIANÇA do OCR — texto renderizado limpo dá ~0.95-1.0; letreiro de
+        camisa/parede dá 0.5-0.8 (é o sinal mais forte, entra ao cubo na nota);
+      • MUDA de texto ao longo do vídeo (acompanha a fala);
+      • fica CENTRALIZADA na horizontal;
+      • NÃO é um pixel congelado (logo em imagem fixa).
+
+    `caixas` = lista de dicts (x0,x1,y0,y1,yc,idx,txt,conf).
+    Retorna as caixas da faixa escolhida, ou [] se nenhuma candidata convence.
+    """
+    if not caixas:
+        return []
+    melhor, melhor_nota = [], 0.0
+    for c in caixas:
+        grupo = [b for b in caixas if abs(b["yc"] - c["yc"]) < 0.035]
+        frames = len(set(b["idx"] for b in grupo))
+        if frames < max(2, int(0.25 * n_frames)):
+            continue
+        conf = float(np.median([b["conf"] for b in grupo]))
+        if conf < 0.50:
+            continue        # leitura ruim → provável ruído da cena
+        x0 = float(np.percentile([b["x0"] for b in grupo], 5))
+        x1 = float(np.percentile([b["x1"] for b in grupo], 95))
+        y0 = min(b["y0"] for b in grupo); y1 = max(b["y1"] for b in grupo)
+        congelado = A is not None and _regiao_estatica(
+            A, {"x0": x0, "x1": x1, "y0": y0, "y1": y1})
+
+        nota = frames * (conf ** 3)
+        if _texto_dinamico(grupo):
+            nota *= 1.4                       # texto que muda = legenda de fala
+        if abs((x0 + x1) / 2 - 0.5) <= 0.15:
+            nota *= 1.3                       # centralizada na tela
+        if congelado:
+            nota *= 0.35                      # pixels parados = logo/marca
+        if nota > melhor_nota:
+            melhor, melhor_nota = grupo, nota
+    # A nota serve para COMPARAR candidatas (é relativa: conf³ varia muito entre
+    # vídeos). Se a vencedora merece blur mesmo é decidido depois, em
+    # detectar_legenda_ocr, com a faixa já medida nos pixels.
+    return melhor
+
+
+def _texto_dinamico(grupo):
+    """True se o texto da faixa MUDA ao longo do vídeo — legenda acompanhando a
+    fala, e não um letreiro fixo."""
+    frames = len(set(b["idx"] for b in grupo))
+    textos = {re.sub(r"\W+", "", b["txt"].lower()) for b in grupo}
+    textos.discard("")
+    return len(textos) >= max(2, int(0.4 * frames))
+
+
+def _variacao_temporal(A, box):
+    """Variação de cada pixel da região (dict x0,x1,y0,y1 em frações) ao longo dos
+    frames. None se a região for degenerada."""
+    n, H, W = A.shape
+    y0 = max(0, int(box["y0"] * H)); y1 = min(H, int(box["y1"] * H) + 1)
+    x0 = max(0, int(box["x0"] * W)); x1 = min(W, int(box["x1"] * W) + 1)
+    if y1 - y0 < 4 or x1 - x0 < 4:
+        return None
+    return A[:, y0:y1, x0:x1].std(axis=0)
+
+
+def _regiao_estatica(A, box, limite=4.0):
+    """
+    True se a região está CONGELADA (quase nenhum pixel muda entre os frames) —
+    assinatura de logo/marca em imagem fixa. Usa a mediana: exige a região toda
+    parada, não só um pedaço.
+    """
+    var = _variacao_temporal(A, box)
+    return var is not None and float(np.median(var)) <= limite
+
+
+def _texto_sobreposto_estatico(A, box, minimo=0.5):
+    """
+    True se os TRAÇOS DE LETRA da região estão parados ao longo do vídeo —
+    assinatura de texto QUEIMADO por cima da imagem (meme).
+
+    Olhar a região inteira não serve: uma tarja semi-transparente deixa o vídeo
+    vazar por trás e a região "muda" mesmo com o texto parado (medido: só 11% dos
+    pixels quietos num overlay real). Então comparamos apenas os pixels de BORDA
+    do frame-mediano — onde estão os traços das letras. Medido nos testes:
+    overlay estático 0.96, vídeo ao vivo 0.00.
+    """
+    n, H, W = A.shape
+    y0 = max(0, int(box["y0"] * H)); y1 = min(H, int(box["y1"] * H) + 1)
+    x0 = max(0, int(box["x0"] * W)); x1 = min(W, int(box["x1"] * W) + 1)
+    if y1 - y0 < 4 or x1 - x0 < 4:
+        return False
+    S = A[:, y0:y1, x0:x1]
+    var = S.std(axis=0)
+    med = np.median(S, axis=0)      # no vídeo ao vivo a mediana sai lavada
+    gx = np.abs(np.diff(med, axis=1, prepend=med[:, :1]))
+    gy = np.abs(np.diff(med, axis=0, prepend=med[:1, :]))
+    traco = (gx > 40) | (gy > 40)
+    if traco.sum() < 50:
+        return False                # sem traço nítido persistente → não é texto
+    return float((var[traco] < 6.0).mean()) >= minimo
+
+
+def detectar_legenda_ocr(video_path, n=N_FRAMES_PIXEL, n_ocr=N_FRAMES_OCR):
+    """
+    Detecta a legenda QUEIMADA do vídeo ORIGINAL (antes do espelhamento): se
+    existe, ONDE está (faixa exata) e se ela está sobre uma tarja de ponta a ponta.
+
+    Duas etapas:
+      1) OCR (em `n_ocr` frames) → banda APROXIMADA do texto + frase de meme no topo;
+      2) medição em PIXELS (em `n` frames, resolução maior) → faixa REAL que o blur
+         deve cobrir (_medir_faixa) e confirmação de que o meme é estático
+         (_texto_sobreposto_estatico). É o que evita blur gigante fora de lugar.
 
     Como a detecção roda no vídeo original, o texto está normal (não espelhado),
     então o OCR o localiza bem. A posição vertical não muda com o hflip.
 
     Retorna dict:
-      {'tem_legenda': True, 'estilo': 'barra'|'blur',
-       'x0','x1','y0','y1','cy'}  (frações 0..1, caixa já com margem)
+      {'tem_legenda': True, 'x0','x1','y0','y1','cy','faixa_total','meme'}
+      (frações 0..1, faixa já com margem)
     ou {'tem_legenda': False} quando não há legenda persistente (→ legenda embaixo).
     """
     tmp = tempfile.mkdtemp()
@@ -256,65 +514,111 @@ def detectar_legenda_ocr(video_path, n=16):
         paths = []
         for i in range(n):
             t = dur * (i + 0.5) / n
-            out = os.path.join(tmp, f"f{i}.png")
+            out = os.path.join(tmp, f"f{i:03d}.png")
             subprocess.run(["ffmpeg", "-y", "-ss", f"{t:.2f}", "-i", video_path,
-                            "-frames:v", "1", "-vf", "scale=540:-1", out, "-loglevel", "error"],
+                            "-frames:v", "1", "-vf", f"scale={LARGURA_ANALISE}:-1",
+                            out, "-loglevel", "error"],
                            check=False)
             if os.path.exists(out):
                 paths.append(out)
         if len(paths) < 3:
             return {"tem_legenda": False}
 
-        reader = _get_ocr_reader()
-        H, W = np.asarray(Image.open(paths[0])).shape[:2]
+        # Frames para a MEDIÇÃO em pixels: todos (barato, é só numpy).
+        A = _carregar_cinza(paths)
+        # Frames para o OCR: um subconjunto espalhado (o OCR é o caro, ~4s/frame).
+        passo = max(1, len(paths) // max(1, n_ocr))
+        paths_ocr = paths[::passo][:n_ocr]
 
-        caixas = []       # legenda (meio/baixo): (x0,x1,y0,y1,yc,idx)
-        caixas_topo = []  # frase de meme no topo: (x0,x1,y0,y1,yc,idx,texto)
-        for idx, p in enumerate(paths):
+        reader = _get_ocr_reader()
+
+        caixas = []       # legenda (meio/baixo)   } dicts com x0,x1,y0,y1,yc,
+        caixas_topo = []  # frase de meme no topo  }   idx (frame), txt e conf
+        for idx, p in enumerate(paths_ocr):
             img = np.asarray(Image.open(p).convert("RGB"))
+            # OCR em resolução menor (mais rápido); as caixas viram FRAÇÕES, então
+            # a escala usada aqui não afeta as coordenadas.
+            if img.shape[1] > LARGURA_OCR:
+                alt = int(img.shape[0] * LARGURA_OCR / img.shape[1])
+                img = np.asarray(Image.fromarray(img).resize((LARGURA_OCR, alt)))
+            hi, wi = img.shape[:2]
             for box, txt, conf in reader.readtext(img):
                 t = txt.strip()
                 if conf < 0.35 or len(t) < 2:
                     continue
                 xs = [q[0] for q in box]; ys = [q[1] for q in box]
-                yc = (min(ys) + max(ys)) / 2 / H
-                caixa = (min(xs)/W, max(xs)/W, min(ys)/H, max(ys)/H, yc, idx)
-                if 0.30 <= yc <= 0.92:              # legenda (meio/baixo)
+                caixa = {"x0": min(xs) / wi, "x1": max(xs) / wi,
+                         "y0": min(ys) / hi, "y1": max(ys) / hi,
+                         "yc": (min(ys) + max(ys)) / 2 / hi,
+                         "idx": idx, "txt": t, "conf": float(conf)}
+                if 0.30 <= caixa["yc"] <= 0.92:              # legenda (meio/baixo)
                     caixas.append(caixa)
-                elif 0.02 <= yc < 0.30 and len(t) >= 3:  # possível meme no topo
-                    caixas_topo.append(caixa + (t,))
+                elif 0.02 <= caixa["yc"] < 0.30 and len(t) >= 3:  # meme no topo?
+                    caixas_topo.append(caixa)
 
-        meme = _detectar_meme_topo(caixas_topo, len(paths))
+        n_ocr_real = len(paths_ocr)
+        meme = _detectar_meme_topo(caixas_topo, n_ocr_real)
+        # Confirma nos pixels que o meme é um texto SOBREPOSTO (região estática).
+        # Vídeo ao vivo no topo muda a cada frame → o OCR ali era lixo e virava
+        # blur gigante fora de lugar.
+        if meme and A is not None:
+            if not _texto_sobreposto_estatico(A, meme):
+                print("   🚫 topo não é meme (nada parado ali) → sem blur no topo.")
+                meme = None
+            else:
+                med_m = _medir_faixa(A, meme["y0"], meme["y1"])
+                if med_m:      # ajusta a caixa do meme na medida real do texto
+                    meme["y0"], meme["y1"] = med_m["y0"], med_m["y1"]
+                    # No X a caixa do OCR já é confiável: a medição só pode
+                    # empurrar um pouco (senão a cena em volta esticaria o blur
+                    # até as bordas e o texto reescrito sairia do lugar).
+                    meme["x0"] = max(0.0, max(min(meme["x0"], med_m["x0"]),
+                                              meme["x0"] - 0.04))
+                    meme["x1"] = min(1.0, min(max(meme["x1"], med_m["x1"]),
+                                              meme["x1"] + 0.04))
 
         if len(caixas) < 3:
             return {"tem_legenda": False, "meme": meme}
 
-        # Agrupa por y-centro: a banda com MAIS caixas é a legenda (±8%)
-        melhor = []
-        for c in caixas:
-            grupo = [b for b in caixas if abs(b[4] - c[4]) < 0.08]
-            if len(grupo) > len(melhor):
-                melhor = grupo
-
-        frames_distintos = len(set(b[5] for b in melhor))
-        if len(melhor) < 3 or frames_distintos < max(2, int(0.25 * len(paths))):
+        # Qual faixa é a legenda queimada (e não uma logo da imagem de fundo)
+        melhor = _escolher_banda(caixas, A, n_ocr_real)
+        if len(melhor) < 3:
             return {"tem_legenda": False, "meme": meme}   # sem legenda persistente
 
-        # Caixa-união (percentis no X p/ ignorar outliers; min/max no Y) + margem
-        x0 = float(np.percentile([b[0] for b in melhor], 5))
-        x1 = float(np.percentile([b[1] for b in melhor], 95))
-        y0 = min(b[2] for b in melhor)
-        y1 = max(b[3] for b in melhor)
+        # Banda APROXIMADA do OCR (percentis no X p/ ignorar outliers) + margem
+        x0 = float(np.percentile([b["x0"] for b in melhor], 5))
+        x1 = float(np.percentile([b["x1"] for b in melhor], 95))
+        y0 = min(b["y0"] for b in melhor)
+        y1 = max(b["y1"] for b in melhor)
         x0 = max(0.0, x0 - 0.02); x1 = min(1.0, x1 + 0.02)
         y0 = max(0.0, y0 - 0.015); y1 = min(1.0, y1 + 0.015)
-        # Se atrás da legenda houver uma TARJA PRETA que atravessa a tela de ponta
-        # a ponta, o blur cobre a largura toda; usa a ALTURA REAL da tarja (não só a
-        # do texto), pra não vazar as bordas da legenda original.
-        tarja = _detectar_tarja_fullwidth(paths, y0, y1)
-        faixa_total = tarja is not None
-        if tarja:
-            y0 = min(y0, tarja[0]); y1 = max(y1, tarja[1])
+
+        # Medição em PIXELS: a faixa REAL do texto. Só vira blur de ponta a ponta
+        # quando o texto está sobre uma TARJA LISA (std baixo na largura toda) —
+        # cena escura NÃO é tarja, e era isso que estourava o blur.
+        faixa_total = False
         cy = (y0 + y1) / 2
+        med = _medir_faixa(A, y0, y1) if A is not None else None
+        if med:
+            y0, y1 = med["y0"], med["y1"]
+            faixa_total = med["faixa_total"]
+            cy = med["cy_texto"]      # nossa legenda vai onde estava o texto
+            # X: a medição pode alargar a caixa do OCR, mas só um pouco (o texto
+            # pode ter glifos que o OCR cortou; o resto da linha é cena).
+            x0 = max(0.0, max(min(x0, med["x0"]), x0 - 0.06))
+            x1 = min(1.0, min(max(x1, med["x1"]), x1 + 0.06))
+
+        # Última trava: legenda queimada MUDA de texto, ou está sobre uma tarja,
+        # ou é uma camada sobreposta centralizada (título fixo). Fora disso é
+        # letreiro da cena (placa, camisa) — não vale borrar nem mandar a nossa
+        # legenda para lá.
+        camada = A is not None and _texto_sobreposto_estatico(
+            A, {"x0": x0, "x1": x1, "y0": y0, "y1": y1})
+        centralizada = abs((x0 + x1) / 2 - 0.5) <= 0.15
+        if not (_texto_dinamico(melhor) or faixa_total or (camada and centralizada)):
+            print("   🚫 texto do meio parece letreiro da cena → sem blur, "
+                  "legenda vai para baixo.")
+            return {"tem_legenda": False, "meme": meme}
 
         # Sempre BLUR (sem tarja) na legenda; 'meme' preserva a frase do topo.
         return {"tem_legenda": True,
@@ -408,7 +712,9 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=18, meme=
         linhas_meme = _quebrar_linhas(meme["texto"], 18)
         maior = max((len(l) for l in linhas_meme), default=1)
         mfs = max(28, min(int(H * 0.038), int(0.84 * W / (0.58 * maior))))
-        mcx = int((meme["x0"] + meme["x1"]) / 2 * W)
+        # O meme foi localizado no vídeo ORIGINAL e o ASS entra DEPOIS do hflip →
+        # espelha o X para o texto cair exatamente sobre o blur do topo.
+        mcx = W - int((meme["x0"] + meme["x1"]) / 2 * W)
         mcy = int((meme["y0"] + meme["y1"]) / 2 * H)
         texto_meme = "\\N".join(linhas_meme)
         linhas.append(
@@ -515,39 +821,55 @@ def processar_video_whisper_nativo(video_path):
         video_basename = os.path.basename(video_path)
         final_basename = os.path.basename(final_output)
 
-        # Monta as caixas de BLUR: a da legenda (união com a nossa) e a do meme.
+        # Monta as caixas de BLUR: cobrem SÓ o que existe de texto no original
+        # (a faixa medida em pixels). A NOSSA legenda é desenhada por cima do
+        # blur pelo ASS, então não precisa (nem deve) inflar a caixa — inflar era
+        # o que gerava aquele retângulo cinza gigante sobre a cena.
         blur_boxes = []
         if leg.get("tem_legenda"):
-            ox0 = int(leg["x0"] * W); ox1 = int(leg["x1"] * W)
-            oy0 = int(leg["y0"] * H); oy1 = int(leg["y1"] * H)
-            char_w = 0.55 * fs                          # caixa da NOSSA legenda
-            sub_w = min(int(W * 0.94), int(max_chars * char_w) + int(0.05 * W))
-            sub_h = int(fs * 1.7)
-            sx = (W - sub_w) // 2
-            sy = centro_y - sub_h // 2
-            m = int(0.01 * W)
-            bx = max(0, min(ox0, sx) - m); bx1 = min(W, max(ox1, sx + sub_w) + m)
-            by = max(0, min(oy0, sy) - m); by1 = min(H, max(oy1, sy + sub_h) + m)
+            bx = int(leg["x0"] * W); bx1 = int(leg["x1"] * W)
+            by = int(leg["y0"] * H); by1 = int(leg["y1"] * H)
+            m = int(0.008 * W)
+            bx = max(0, bx - m); bx1 = min(W, bx1 + m)
+            by = max(0, by - int(0.004 * H)); by1 = min(H, by1 + int(0.004 * H))
             if leg.get("faixa_total"):
-                # Tarja preta original atravessa a tela → blur de ponta a ponta,
-                # mantendo a altura da faixa (só a largura muda).
+                # Tarja lisa original atravessa a tela → blur de ponta a ponta,
+                # mantendo a ALTURA medida da faixa (só a largura muda).
                 bx = 0; bx1 = W
                 print("   ↔️ Tarja original de ponta a ponta → blur na largura total.")
+            print(f"   🩹 Faixa da legenda: y {by/H:.3f}→{by1/H:.3f} "
+                  f"({(by1-by)/H*100:.1f}% da altura), x {bx/W:.3f}→{bx1/W:.3f}")
             blur_boxes.append((bx, by, max(1, bx1 - bx), max(1, by1 - by)))
         if meme:
-            mx = int(meme["x0"] * W); mx1 = int(meme["x1"] * W)
-            my = int(meme["y0"] * H); my1 = int(meme["y1"] * H)
-            mm = int(0.015 * W)
-            mx = max(0, mx - mm); my = max(0, my - mm)
-            blur_boxes.append((mx, my, min(W - mx, mx1 - mx + 2 * mm),
-                               min(H - my, my1 - my + 2 * mm)))
+            mm = int(0.012 * W); mv = int(0.004 * H)
+            mx = max(0, int(meme["x0"] * W) - mm)
+            mx1 = min(W, int(meme["x1"] * W) + mm)
+            my = max(0, int(meme["y0"] * H) - mv)
+            my1 = min(H, int(meme["y1"] * H) + mv)
+            print(f"   🩹 Faixa do meme: y {my/H:.3f}→{my1/H:.3f}, "
+                  f"x {mx/W:.3f}→{mx1/W:.3f}")
+            blur_boxes.append((mx, my, max(1, mx1 - mx), max(1, my1 - my)))
 
         if blur_boxes:
-            # Cadeia de blurs localizados (gblur forte) + a legenda/meme por cima (ass)
+            # ATENÇÃO: as caixas foram medidas no vídeo ORIGINAL, mas o blur é
+            # aplicado DEPOIS do hflip → o X tem que ser espelhado (x → W-x-w),
+            # senão o blur cai no lado errado da tela.
+            blur_boxes = [(W - x - w, y, w, h) for (x, y, w, h) in blur_boxes]
+
+            # Cadeia de blurs localizados (gblur) + a legenda/meme por cima (ass)
             partes = ["[0:v]hflip[v0]"]
             prev = "v0"
             for i, (x, y, w, h) in enumerate(blur_boxes):
-                sig = max(16, min(w, h) // 5)
+                # Força proporcional à ALTURA da faixa (é ela que dá a escala do
+                # traço das letras). h/4 foi o mínimo que deixou o texto original
+                # ilegível nos testes em 1080p e 4K — abaixo disso ainda se lia.
+                sig = int(max(12, min(150, h / 4)))
+                # O gblur perde força na BORDA do recorte (não tem vizinho pra
+                # puxar), então texto encostado na quina ficava legível. Dá uma
+                # folga vertical: no caso da tarja é preto liso, não muda nada.
+                folga = sig // 2
+                y = max(0, y - folga)
+                h = min(H - y, h + 2 * folga)
                 partes.append(f"[{prev}]split=2[{prev}a][{prev}t]")
                 partes.append(f"[{prev}t]crop={w}:{h}:{x}:{y},gblur=sigma={sig}[bl{i}]")
                 partes.append(f"[{prev}a][bl{i}]overlay={x}:{y}[v{i+1}]")
@@ -574,11 +896,13 @@ def processar_video_whisper_nativo(video_path):
             extra={"n_cues": n_cues, "fs": fs, "cobertura": len(blur_boxes)})
 
         # Espelha no banco de controle (Postgres) — best-effort, não bloqueia.
-        titulo = base_name.replace("_", " ")
+        # NÃO manda título: o título do post no canal ORIGINAL é gravado pelo
+        # watcher e é ele que o painel mostra (com link pra fonte). Mandar o nome
+        # do arquivo aqui sobrescrevia tudo por "bfAcE48SKDk 20260805 124549".
         try:
             from comum import db_bridge
             db_bridge.registrar_video_processado(
-                final_output, deteccao=leg, versao=SISTEMA_VERSAO, titulo=titulo,
+                final_output, deteccao=leg, versao=SISTEMA_VERSAO,
                 transcricao=texto_transcricao)
         except Exception as e:
             print(f"⚠️  espelho no banco falhou (ignorado): {e}")
@@ -586,7 +910,7 @@ def processar_video_whisper_nativo(video_path):
         # Enfileira para postagem no BANCO (fila = model Post 'pendente').
         if POSTER_DISPONIVEL and os.path.exists(final_output):
             legenda_ia = gerar_legenda_ia(texto_transcricao, titulo_original="")
-            adicionar_na_fila(final_output, titulo, caption=legenda_ia)
+            adicionar_na_fila(final_output, caption=legenda_ia)
 
     except subprocess.CalledProcessError as e:
         print(f"❌ Erro ao processar FFmpeg final: {e.stderr.decode('utf-8', errors='ignore')}")
