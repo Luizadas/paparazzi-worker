@@ -56,6 +56,11 @@ COR_LEGENDA = "&H00FFFFFF"          # branco (ASS é &HAABBGGRR)
 COR_LEGENDA_DESTAQUE = "&H00800000"  # azul marinho #000080
 CICLO_COR_LEGENDA = 4          # 3 palavras brancas + 1 destacada
 
+# CAPA: o TikTok usa o 1º frame do vídeo como miniatura. Como espelhamos o vídeo,
+# esse frame sairia com o texto invertido — então emendamos o 1º frame ORIGINAL
+# (sem espelho e sem blur) por alguns segundos no início. 0 desliga.
+CAPA_SEGUNDOS = float(os.getenv("CAPA_SEGUNDOS", "1"))
+
 
 def _get_whisper():
     """Carrega o modelo faster-whisper uma vez (CPU, int8)."""
@@ -111,6 +116,45 @@ def _duracao_video(video_path):
             capture_output=True, text=True, check=True).stdout.strip())
     except Exception:
         return 0.0
+
+
+def _fps_video(video_path, padrao=30.0):
+    """Quadros por segundo do vídeo (r_frame_rate, que vem como fração)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", video_path],
+            capture_output=True, text=True, check=True).stdout.strip()
+        num, den = (out.split("/") + ["1"])[:2]
+        fps = float(num) / float(den or 1)
+        return fps if 1 <= fps <= 240 else padrao
+    except Exception:
+        return padrao
+
+
+def _tem_audio(video_path):
+    """True se o arquivo tem pelo menos uma trilha de áudio."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+             "stream=index", "-of", "csv=p=0", video_path],
+            capture_output=True, text=True, check=True).stdout.strip()
+        return bool(out)
+    except Exception:
+        return True
+
+
+def _extrair_capa(video_path, destino):
+    """Salva o PRIMEIRO frame do vídeo ORIGINAL (sem espelho, sem blur) — é ele
+    que vira a miniatura no TikTok. True se conseguiu."""
+    try:
+        subprocess.run(["ffmpeg", "-y", "-i", video_path, "-frames:v", "1",
+                        "-q:v", "2", destino, "-loglevel", "error"],
+                       check=True, capture_output=True)
+        return os.path.exists(destino) and os.path.getsize(destino) > 0
+    except Exception as e:
+        print(f"⚠️  não deu para extrair a capa ({e}); segue sem cartela.")
+        return False
 
 
 def _dimensoes_video(video_path):
@@ -808,6 +852,7 @@ def processar_video_whisper_nativo(video_path):
     srt_path = os.path.join(base_dir, f"{base_name}.srt")
     audio_path = os.path.join(base_dir, f"{base_name}_audio.wav")
     final_output = os.path.join(base_dir, f"{base_name}_final.mp4")
+    capa_path = os.path.join(base_dir, f"{base_name}_capa.jpg")
 
     # Passo 1: Extrair áudio para o Whisper
     print("Passo 1/3: Extraindo áudio para transcrição...")
@@ -931,18 +976,45 @@ def processar_video_whisper_nativo(video_path):
                 partes.append(f"[{prev}a][bl{i}]overlay={x}:{y}[v{i+1}]")
                 prev = f"v{i+1}"
             # fontsdir: a Anton vive no repo, não instalada no sistema
-            partes.append(f"[{prev}]ass={ass_basename}:fontsdir={DIR_FONTES}")
-            ff_args = ["-filter_complex", ";".join(partes)]
+            partes.append(f"[{prev}]ass={ass_basename}:fontsdir={DIR_FONTES}[corpo]")
             print(f"🎬 Cobertura: {len(blur_boxes)} blur(s) "
                   f"({'legenda' if leg.get('tem_legenda') else ''}"
                   f"{'+meme' if meme else ''}).")
         else:
             # Sem legenda nem meme no original → só espelha; nossa legenda embaixo
-            ff_args = ["-vf", f"hflip,ass={ass_basename}:fontsdir={DIR_FONTES}"]
+            partes = [f"[0:v]hflip,ass={ass_basename}:fontsdir={DIR_FONTES}[corpo]"]
             print("🎬 Sem cobertura (legenda embaixo).")
 
+        # CAPA: o TikTok usa o PRIMEIRO FRAME como miniatura, e no nosso vídeo ele
+        # sai espelhado (o título do original fica ilegível). Então emendamos o
+        # primeiro frame do vídeo ORIGINAL — sem espelho e sem blur — como uma
+        # cartela de CAPA_SEGUNDOS no começo. O áudio é atrasado igual, para não
+        # sair de sincronia; a legenda é queimada no corpo, então os tempos dela
+        # não mudam.
+        entradas = ["-i", video_basename]
+        mapeia = []
+        if CAPA_SEGUNDOS > 0 and _extrair_capa(video_path, capa_path):
+            fps = _fps_video(video_path)
+            entradas = ["-i", video_basename,
+                        "-framerate", f"{fps:.6f}", "-loop", "1",
+                        "-t", f"{CAPA_SEGUNDOS}", "-i", os.path.basename(capa_path)]
+            partes.append(f"[1:v]scale={W}:{H},setsar=1,fps={fps:.6f},"
+                          f"format=yuv420p[capa]")
+            partes.append("[capa][corpo]concat=n=2:v=1:a=0[vout]")
+            mapeia = ["-map", "[vout]"]
+            if _tem_audio(video_path):
+                partes.append(f"[0:a]adelay=delays={int(CAPA_SEGUNDOS*1000)}:all=1[aout]")
+                mapeia += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
+            print(f"🖼️  Capa: 1º frame do original (sem espelho) por "
+                  f"{CAPA_SEGUNDOS:g}s no início — é a miniatura do TikTok.")
+        else:
+            mapeia = ["-map", "[corpo]"]
+            if _tem_audio(video_path):
+                mapeia += ["-map", "0:a", "-c:a", "copy"]
+
         subprocess.run(
-            ["ffmpeg", "-i", video_basename, *ff_args, "-c:a", "copy", final_basename, "-y"],
+            ["ffmpeg", *entradas, "-filter_complex", ";".join(partes), *mapeia,
+             final_basename, "-y"],
             cwd=base_dir, check=True, capture_output=True)
         print(f"✅ Processamento concluído! Vídeo final salvo em: {final_output}")
 
@@ -973,7 +1045,7 @@ def processar_video_whisper_nativo(video_path):
         print(f"❌ Erro ao processar FFmpeg final: {e.stderr.decode('utf-8', errors='ignore')}")
 
     # Limpeza
-    for temp_file in [audio_path, ass_path, video_path]:
+    for temp_file in [audio_path, ass_path, capa_path, video_path]:
         if os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
