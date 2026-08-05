@@ -33,6 +33,9 @@
     .acoes { display:flex; gap:6px; margin-top:6px; }
     .msg { padding:10px 14px; border-radius:8px; margin-bottom:10px; background:#1f2937; }
     .indispon { color:#f59e0b; }
+    a.fonte { color:#9aa4b2; text-decoration:none; }
+    a.fonte:hover { color:#60a5fa; text-decoration:underline; }
+    .versao { color:#4ade80; font-weight:600; }
   </style>
 </head>
 <body>
@@ -61,6 +64,7 @@
         <th data-sort="nome" onclick="ordenar('nome')">Nome do vídeo <span class="seta"></span></th>
         <th>Legenda do post</th>
         <th data-sort="status" onclick="ordenar('status')">Status <span class="seta"></span></th>
+        <th data-sort="editado" onclick="ordenar('editado')">Editado (versão) <span class="seta"></span></th>
         <th data-sort="data" onclick="ordenar('data')">Data de criação <span class="seta"></span></th>
         <th>Download</th>
       </tr>
@@ -69,8 +73,9 @@
       {% for r in rows %}
       <tr data-nome="{{ r.caption|default:r.v.video_id|lower }}"
           data-status="{{ r.post_status|lower }}"
+          data-editado="{{ r.editado_em|date:'YmdHis' }}"
           data-data="{{ r.v.criado_em|date:'YmdHis' }}"
-          data-busca="{{ r.caption|lower }} {{ r.v.video_id|lower }} {{ r.v.canal.nome|default:''|lower }}">
+          data-busca="{{ r.caption|lower }} {{ r.v.titulo|lower }} {{ r.v.video_id|lower }} {{ r.v.canal.nome|default:''|lower }}">
         <td>
           {% if r.disponivel %}
             <a class="nome" href="{% url 'video_ver' r.v.id %}" target="_blank"
@@ -80,6 +85,13 @@
             <span>{{ r.caption|default:r.v.video_id|truncatechars:60 }}</span>
             <div class="muted indispon">vídeo indisponível (expirado)</div>
           {% endif %}
+          {# Título do post no canal ORIGINAL, com link pra fonte — é por ele que
+             se reconhece o vídeo (o nome acima é a legenda que NÓS geramos). #}
+          <div class="muted">
+            <a class="fonte" href="{{ r.v.url_fonte }}" target="_blank" rel="noopener"
+               title="{{ r.v.titulo_fonte }} — abrir no canal original"
+               >↗ {{ r.v.titulo_fonte|truncatechars:55 }}</a>
+          </div>
           <div class="muted">{{ r.v.video_id }} · {{ r.v.canal.nome|default:"—" }}</div>
         </td>
         <td>
@@ -99,6 +111,10 @@
           </div>
         </td>
         <td>{{ r.post_status }}</td>
+        <td class="muted">
+          {% if r.editado_em %}{{ r.editado_em|date:"d/m/Y H:i" }}{% else %}—{% endif %}
+          {% if r.v.versao_sistema %}<div class="versao">v{{ r.v.versao_sistema }}</div>{% endif %}
+        </td>
         <td class="muted">{{ r.v.criado_em|date:"d/m/Y H:i" }}</td>
         <td>
           {% if r.disponivel %}
@@ -107,7 +123,7 @@
         </td>
       </tr>
       {% empty %}
-      <tr><td colspan="5" class="muted">Nenhum vídeo no banco.</td></tr>
+      <tr><td colspan="6" class="muted">Nenhum vídeo no banco.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -116,7 +132,7 @@
 <script>
   const tbody = document.querySelector('#tabela tbody');
   const linhas = () => Array.from(tbody.querySelectorAll('tr[data-busca]'));
-  let ordem = { col: 'data', dir: -1 };
+  let ordem = { col: 'editado', dir: -1 };
 
   function filtrar() {
     const q = document.getElementById('busca').value.toLowerCase().trim();

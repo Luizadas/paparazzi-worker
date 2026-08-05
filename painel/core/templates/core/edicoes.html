@@ -83,13 +83,16 @@
   <div class="card">
     <h3>Candidatos à edição</h3>
     <table>
-      <tr><th>Nome (abre no YouTube)</th><th>Canal</th><th>Postado no canal</th>
-          <th>Views</th><th>Status</th><th></th></tr>
+      <tr><th>Nome (legenda do post original — abre a fonte)</th><th>Canal</th>
+          <th>Postado no canal</th><th>Views</th><th>Status</th><th></th></tr>
       {% for v in candidatos %}
       <tr>
         <td>
-          <a class="nome" href="{{ v.url_origem }}" target="_blank"
-             title="Abrir no YouTube">{{ v.titulo|default:v.video_id }}</a>
+          {# Início da legenda/título do post NO CANAL ORIGINAL; o clique vai
+             para o vídeo fonte (url_fonte cai no watch?v= quando falta). #}
+          <a class="nome" href="{{ v.url_fonte }}" target="_blank" rel="noopener"
+             title="{{ v.titulo_fonte }} — abrir no canal original">
+            {{ v.titulo_fonte|truncatechars:60 }}</a>
           <div class="muted">{{ v.video_id }}</div>
         </td>
         <td>{{ v.canal.nome|default:"—" }}</td>

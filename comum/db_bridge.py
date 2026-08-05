@@ -53,7 +53,6 @@ def registrar_video_processado(arquivo, deteccao=None, versao="", titulo="",
             canal, _ = Canal.objects.get_or_create(youtube_id=canal_youtube_id)
         tamanho = os.path.getsize(arquivo) if arquivo and os.path.exists(arquivo) else None
         defaults = {
-            "titulo": titulo or "",
             "status": Video.Status.PROCESSADO,
             "versao_sistema": versao,
             "deteccao": deteccao or {},
@@ -65,6 +64,17 @@ def registrar_video_processado(arquivo, deteccao=None, versao="", titulo="",
         if canal:
             defaults["canal"] = canal
         video, _ = Video.objects.update_or_create(video_id=vid, defaults=defaults)
+        # Título e link da FONTE são do watcher (título do post no canal original).
+        # A edição NÃO pode sobrescrevê-los — o painel mostra esse título na aba
+        # Edições e linka para o vídeo original. Só preenchemos o que estiver vazio.
+        faltando = []
+        if titulo and not video.titulo:
+            video.titulo = titulo; faltando.append("titulo")
+        if not video.url_origem:
+            video.url_origem = f"https://www.youtube.com/watch?v={vid}"
+            faltando.append("url_origem")
+        if faltando:
+            video.save(update_fields=faltando + ["atualizado_em"])
         return video.id
     except Exception as e:
         print(f"⚠️  db_bridge.registrar_video_processado: {e}")

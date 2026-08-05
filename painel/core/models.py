@@ -75,6 +75,19 @@ class Video(models.Model):
     def __str__(self):
         return f"{self.video_id} ({self.status})"
 
+    @property
+    def url_fonte(self):
+        """Link do vídeo NO CANAL ORIGINAL. O watcher grava em url_origem; quando
+        falta (linha criada por outro caminho), monta a partir do id do YouTube —
+        mesma regra do db_bridge, para o link nunca sair vazio no painel."""
+        return self.url_origem or f"https://www.youtube.com/watch?v={self.video_id}"
+
+    @property
+    def titulo_fonte(self):
+        """Título/legenda do post no canal original (o que o watcher leu do
+        YouTube). Cai no id do vídeo se ainda não tivermos o título."""
+        return self.titulo or self.video_id
+
 
 class Post(models.Model):
     class Plataforma(models.TextChoices):

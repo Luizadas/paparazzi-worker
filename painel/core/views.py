@@ -5,7 +5,7 @@ Painel de controle (local, sem login). Mostra os vídeos das últimas 24h e perm
 """
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.contrib import messages
 from django.http import FileResponse, Http404
@@ -214,13 +214,28 @@ def videos_lista(request):
     rows = []
     for v in videos:
         post = _post_do_video(v)
+        disponivel = _arquivo_disponivel(v)
+        # Quando o arquivo foi EDITADO (mtime do _final.mp4). É diferente de
+        # criado_em (quando o vídeo entrou no banco) e de atualizado_em (qualquer
+        # save bate nele) — é isso que mostra o que acabou de ser reprocessado.
+        editado_em = None
+        if disponivel:
+            try:
+                editado_em = datetime.fromtimestamp(os.path.getmtime(v.arquivo_local))
+            except OSError:
+                pass
         rows.append({
             "v": v,
             "caption": post.caption if post else "",
             "post_status": post.get_status_display() if post else "—",
-            "disponivel": _arquivo_disponivel(v),
+            "disponivel": disponivel,
+            "editado_em": editado_em,
             "tem_transcricao": bool(v.transcricao),
         })
+    # Mais recém-editados primeiro (sem arquivo vai para o fim).
+    rows.sort(key=lambda r: (r["editado_em"] is not None,
+                             r["editado_em"] or r["v"].criado_em.replace(tzinfo=None)),
+              reverse=True)
     return render(request, "core/videos.html", {"rows": rows})
 
 
