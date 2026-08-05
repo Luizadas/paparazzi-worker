@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 
 # Bump a cada mudança relevante na LÓGICA de processamento (não em bug trivial).
-SISTEMA_VERSAO = "1.3.1"
+SISTEMA_VERSAO = "1.4.0"
 
 # Histórico curto — o que mudou em cada versão da lógica de processamento.
 CHANGELOG = {
@@ -23,6 +23,9 @@ CHANGELOG = {
               "só se for lisa, X espelhado após o hflip, meme só se for estático."),
     "1.3.1": ("Vídeo dividido: blur cobre EXATAMENTE a tarja preta (sem margem) e "
               "a folga do gblur é recortada antes do overlay — não invade a cena."),
+    "1.4.0": ("Legenda karaokê: UMA palavra por vez em maiúsculas, fonte Anton "
+              "(assets/fontes, via fontsdir) com ScaleX 110, subindo 1% da altura "
+              "durante a palavra, 3 brancas + 1 azul marinho."),
 }
 
 # Onde gravamos o log de proveniência (append-only).

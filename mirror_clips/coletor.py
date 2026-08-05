@@ -45,6 +45,17 @@ N_FRAMES_OCR = int(os.getenv("BLUR_FRAMES_OCR", "16"))  # frames p/ o OCR
 LARGURA_ANALISE = 720   # largura dos frames analisados
 LARGURA_OCR = 540       # largura usada no OCR
 
+# Legenda KARAOKÊ (uma palavra por vez), medida quadro a quadro nos vídeos do
+# canal original — ver assets/fontes/LEIA-ME.md.
+RAIZ_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DIR_FONTES = os.path.join(RAIZ_REPO, "assets", "fontes")   # Anton.ttf (sem instalar)
+ALT_LETRA_LEGENDA = 0.0479     # altura da letra / altura do vídeo (medido: 184/3840)
+ANTON_ALT_POR_FS = 0.4977      # o libass renderiza a Anton a ~0,50 do fontsize
+DESLOC_LEGENDA = 0.01          # deslize vertical total, em fração da altura
+COR_LEGENDA = "&H00FFFFFF"          # branco (ASS é &HAABBGGRR)
+COR_LEGENDA_DESTAQUE = "&H00800000"  # azul marinho #000080
+CICLO_COR_LEGENDA = 4          # 3 palavras brancas + 1 destacada
+
 
 def _get_whisper():
     """Carrega o modelo faster-whisper uma vez (CPU, int8)."""
@@ -88,8 +99,19 @@ from comum.legenda_ia import gerar_legenda_ia, _sanitizar_legenda
 
 
 # ─────────────────────────────────────────────
-#  LEGENDA: detecção da faixa original + geração do ASS (1 linha)
+#  LEGENDA: detecção da faixa original + geração do ASS (karaokê)
 # ─────────────────────────────────────────────
+
+def _duracao_video(video_path):
+    """Duração em segundos via ffprobe (0.0 se não der)."""
+    try:
+        return float(subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", video_path],
+            capture_output=True, text=True, check=True).stdout.strip())
+    except Exception:
+        return 0.0
+
 
 def _dimensoes_video(video_path):
     """Retorna (largura, altura) do vídeo via ffprobe."""
@@ -657,39 +679,50 @@ def _quebrar_linhas(texto, max_chars):
     return linhas or [texto]
 
 
-def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=18, meme=None):
+def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, duracao=None,
+                      meme=None, contorno=False):
     """
-    Gera um arquivo .ASS com legendas de UMA linha (agrupa palavras até max_chars),
-    texto branco em negrito com contorno, posicionado no centro vertical detectado
-    (\\pos), sobre o blur. Se 'meme' for dado, adiciona um evento ESTÁTICO no topo
-    reescrevendo a frase de meme (preservada) sobre o blur do topo.
+    Gera o .ASS da legenda KARAOKÊ — UMA PALAVRA POR VEZ, no estilo do canal
+    original (medido quadro a quadro nos vídeos deles):
+
+      • uma palavra por cue, em MAIÚSCULAS, centralizada na faixa detectada;
+      • fonte Anton (em assets/fontes, via fontsdir) com ScaleX 110 — a medição
+        deu 425 px de largura contra 424 px do original em "TUDO" (4K);
+      • cada palavra ENTRA um pouco abaixo e SOBE 1% da altura do vídeo ao longo
+        de toda a sua duração (\\move) — no original a distância é fixa e a
+        velocidade varia com o tempo da palavra;
+      • a palavra fica até a PRÓXIMA começar; em silêncio, a última permanece;
+      • a cada 3 palavras brancas, uma AZUL MARINHO.
+
+    `duracao` é usada para o fim da última palavra. `contorno=True` adiciona borda
+    preta (necessário quando a legenda cai sobre a cena, sem tarja atrás).
+    Se 'meme' for dado, adiciona um evento ESTÁTICO no topo reescrevendo a frase.
     """
-    cues, cur, ini = [], [], None
-    for seg in segments:
-        for w in seg.get("words", []):
-            tok = (w.get("word") or "").strip()
-            if not tok:
-                continue
-            if ini is None:
-                ini = w["start"]
-            cand = (" ".join([x[2] for x in cur] + [tok])).strip()
-            if len(cand) > max_chars and cur:
-                cues.append((ini, cur[-1][1], " ".join(x[2] for x in cur)))
-                cur, ini = [(w["start"], w["end"], tok)], w["start"]
-            else:
-                cur.append((w["start"], w["end"], tok))
-    if cur:
-        cues.append((ini, cur[-1][1], " ".join(x[2] for x in cur)))
+    palavras = [(w["start"], w.get("end") or w["start"], (w.get("word") or "").strip())
+                for seg in segments for w in seg.get("words", [])
+                if (w.get("word") or "").strip()]
+    palavras.sort(key=lambda p: p[0])
+
+    # Cada palavra vale até a próxima começar (isso já "estica sobre o silêncio"
+    # e mantém a última no ar enquanto ninguém fala).
+    fim_video = duracao or (palavras[-1][1] + 2.0 if palavras else 0.0)
+    cues = []
+    for i, (ini, fim_fala, txt) in enumerate(palavras):
+        fim = palavras[i + 1][0] if i + 1 < len(palavras) else max(fim_video, fim_fala)
+        if fim <= ini:
+            continue
+        cues.append((ini, fim, txt.upper()))
 
     max_chars = max((len(t) for _, _, t in cues), default=0)
-    # Fonte GRANDE, mas limitada pela largura da legenda mais longa para NÃO
-    # encostar na borda (mantém a linha dentro de ~86% da largura do vídeo).
-    base_fs = int(H * 0.042)
+    # fontsize p/ dar a altura de letra do original (4,79% de H). O libass
+    # renderiza a Anton a ~0,50 do fontsize — medido, não é o mesmo fator do PIL.
+    fs = max(24, int(round(ALT_LETRA_LEGENDA * H / ANTON_ALT_POR_FS)))
+    # trava de largura: palavra longa não pode encostar na borda. Na Anton com
+    # ScaleX 110 cada caractere ocupa ~0,32 do fontsize.
     if max_chars > 0:
-        fs_cap = int(0.84 * W / (0.58 * max_chars))
-        fs = max(30, min(base_fs, fs_cap))
-    else:
-        fs = base_fs
+        fs = min(fs, max(24, int(0.92 * W / (0.32 * max_chars))))
+    dy = max(1, int(round(DESLOC_LEGENDA * H / 2)))     # metade p/ cada lado
+    borda = max(2, int(fs * 0.05)) if contorno else 0
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -698,17 +731,22 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=18, meme=
         "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Def,Arial,{fs},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,"
-        "100,100,0,0,1,3,0,5,10,10,10,1\n\n"
+        # Anton já é pesada: Bold=0 (senão o libass engrossa artificialmente).
+        # ScaleX 110 = a largura medida no original.
+        f"Style: Kar,Anton,{fs},{COR_LEGENDA},&H00000000,&H00000000,0,0,0,0,"
+        f"110,100,0,0,1,{borda},0,5,10,10,10,1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     linhas = [header]
-    for st, en, txt in cues:
+    cx = W // 2
+    for i, (st, en, txt) in enumerate(cues):
         txt = txt.replace("\n", " ").strip()
+        # 3 brancas + 1 azul marinho, em ciclo
+        cor = "" if (i + 1) % CICLO_COR_LEGENDA else f"\\c{COR_LEGENDA_DESTAQUE}"
         linhas.append(
-            f"Dialogue: 0,{_fmt_ass_ts(st)},{_fmt_ass_ts(en)},Def,,0,0,0,,"
-            f"{{\\an5\\pos({W // 2},{centro_y_px})}}{txt}"
+            f"Dialogue: 0,{_fmt_ass_ts(st)},{_fmt_ass_ts(en)},Kar,,0,0,0,,"
+            f"{{\\an5{cor}\\move({cx},{centro_y_px + dy},{cx},{centro_y_px - dy})}}{txt}"
         )
 
     # Frase de MEME no topo: evento ESTÁTICO (dura o vídeo todo), reescrito sobre
@@ -716,15 +754,16 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, max_chars=18, meme=
     if meme and meme.get("texto"):
         linhas_meme = _quebrar_linhas(meme["texto"], 18)
         maior = max((len(l) for l in linhas_meme), default=1)
-        mfs = max(28, min(int(H * 0.038), int(0.84 * W / (0.58 * maior))))
+        mfs = max(24, min(int(ALT_LETRA_LEGENDA * H / ANTON_ALT_POR_FS * 0.8),
+                          int(0.92 * W / (0.32 * maior))))
         # O meme foi localizado no vídeo ORIGINAL e o ASS entra DEPOIS do hflip →
         # espelha o X para o texto cair exatamente sobre o blur do topo.
         mcx = W - int((meme["x0"] + meme["x1"]) / 2 * W)
         mcy = int((meme["y0"] + meme["y1"]) / 2 * H)
         texto_meme = "\\N".join(linhas_meme)
         linhas.append(
-            f"Dialogue: 0,0:00:00.00,9:59:59.99,Def,,0,0,0,,"
-            f"{{\\an5\\pos({mcx},{mcy})\\fs{mfs}}}{texto_meme}"
+            f"Dialogue: 0,0:00:00.00,9:59:59.99,Kar,,0,0,0,,"
+            f"{{\\an5\\pos({mcx},{mcy})\\fs{mfs}}}{texto_meme.upper()}"
         )
 
     with open(ass_path, "w", encoding="utf-8") as f:
@@ -809,8 +848,12 @@ def processar_video_whisper_nativo(video_path):
             meme["texto"] = corrigir_texto_ia(meme["texto"])
             print(f"   → meme reescrito: '{meme['texto']}'")
 
-        n_cues, max_chars, fs = gerar_ass_legenda(segmentos, ass_path, W, H, centro_y, meme=meme)
-        print(f"📝 {n_cues} legendas de 1 linha geradas (máx {max_chars} chars).")
+        # Sem tarja atrás, a legenda cai sobre a cena → precisa de contorno.
+        n_cues, max_chars, fs = gerar_ass_legenda(
+            segmentos, ass_path, W, H, centro_y, duracao=_duracao_video(video_path),
+            meme=meme, contorno=not leg.get("faixa_total"))
+        print(f"📝 {n_cues} palavras na legenda karaokê "
+              f"(maior: {max_chars} chars, fonte {fs}).")
     except Exception as e:
         print(f"❌ Erro ao rodar whisper internamente: {e}")
         return
@@ -887,14 +930,15 @@ def processar_video_whisper_nativo(video_path):
                               f"crop={w}:{h}:0:{y - ya}[bl{i}]")
                 partes.append(f"[{prev}a][bl{i}]overlay={x}:{y}[v{i+1}]")
                 prev = f"v{i+1}"
-            partes.append(f"[{prev}]ass={ass_basename}")
+            # fontsdir: a Anton vive no repo, não instalada no sistema
+            partes.append(f"[{prev}]ass={ass_basename}:fontsdir={DIR_FONTES}")
             ff_args = ["-filter_complex", ";".join(partes)]
             print(f"🎬 Cobertura: {len(blur_boxes)} blur(s) "
                   f"({'legenda' if leg.get('tem_legenda') else ''}"
                   f"{'+meme' if meme else ''}).")
         else:
             # Sem legenda nem meme no original → só espelha; nossa legenda embaixo
-            ff_args = ["-vf", f"hflip,ass={ass_basename}"]
+            ff_args = ["-vf", f"hflip,ass={ass_basename}:fontsdir={DIR_FONTES}"]
             print("🎬 Sem cobertura (legenda embaixo).")
 
         subprocess.run(
