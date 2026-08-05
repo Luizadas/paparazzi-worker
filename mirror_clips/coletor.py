@@ -338,9 +338,8 @@ def _medir_faixa(A, y0f, y1f):
     #    engolir metade da tela.
     barra = (prof["std"] < 20) & (prof["dark"] >= 0.7)
 
-    # 3) Cresce a faixa para dentro da tarja (bordas da barra), com teto. Cobrir
-    #    preto liso não muda nada na imagem e garante que nada de texto sobre.
-    teto = max(4, int(0.045 * H))
+    # 3) Cresce a faixa para dentro da tarja, com teto (tarja não é meia tela).
+    teto = max(4, int(0.05 * H))
     cima = 0
     while cima < teto and ytop - 1 >= 0 and barra[ytop - 1]:
         ytop -= 1; cima += 1
@@ -349,6 +348,10 @@ def _medir_faixa(A, y0f, y1f):
         ybase += 1; baixo += 1
     faixa_total = (cima + baixo) >= max(3, int(0.004 * H)) and \
                   float(np.median(prof["dark"][ytop:ybase + 1])) >= 0.6
+    # Vídeo DIVIDIDO (cena em cima, imagem embaixo, tarja preta no meio): a faixa
+    # a cobrir é EXATAMENTE a tarja — ela já vai de ponta a ponta e o texto está
+    # todo dentro dela. Passar disso borra a cena/imagem de graça, que era o que
+    # aparecia como véu cinza acima e abaixo da tarja.
 
     # 4) Extensão horizontal real do texto (colunas com borda dentro da faixa).
     #    Percentil alto entre frames: cada frase ocupa colunas diferentes, então a
@@ -369,7 +372,9 @@ def _medir_faixa(A, y0f, y1f):
         meia = int(0.10 * H)
         ytop = max(0, centro - meia); ybase = min(H - 1, centro + meia)
 
-    m = max(1, int(0.005 * H))
+    # Margem só faz sentido quando NÃO há tarja (texto solto sobre a cena): aí
+    # uma folga ajuda a pegar contorno/sombra do glifo. Com tarja, margem = 0.
+    m = 0 if faixa_total else max(1, int(0.005 * H))
     return {
         "y0": round(max(0.0, (ytop - m) / H), 4),
         "y1": round(min(1.0, (ybase + 1 + m) / H), 4),
@@ -829,14 +834,19 @@ def processar_video_whisper_nativo(video_path):
         if leg.get("tem_legenda"):
             bx = int(leg["x0"] * W); bx1 = int(leg["x1"] * W)
             by = int(leg["y0"] * H); by1 = int(leg["y1"] * H)
-            m = int(0.008 * W)
-            bx = max(0, bx - m); bx1 = min(W, bx1 + m)
-            by = max(0, by - int(0.004 * H)); by1 = min(H, by1 + int(0.004 * H))
             if leg.get("faixa_total"):
-                # Tarja lisa original atravessa a tela → blur de ponta a ponta,
-                # mantendo a ALTURA medida da faixa (só a largura muda).
+                # Tarja lisa de ponta a ponta (vídeo dividido) → largura total e
+                # altura EXATA da tarja medida: nada de margem, senão o blur
+                # invade a cena em cima e a imagem embaixo.
                 bx = 0; bx1 = W
-                print("   ↔️ Tarja original de ponta a ponta → blur na largura total.")
+                print("   ↔️ Tarja original de ponta a ponta → blur na largura "
+                      "total, altura exata da tarja.")
+            else:
+                # Texto solto sobre a cena: uma margem pequena ajuda a cobrir
+                # contorno/sombra das letras.
+                m = int(0.008 * W)
+                bx = max(0, bx - m); bx1 = min(W, bx1 + m)
+                by = max(0, by - int(0.004 * H)); by1 = min(H, by1 + int(0.004 * H))
             print(f"   🩹 Faixa da legenda: y {by/H:.3f}→{by1/H:.3f} "
                   f"({(by1-by)/H*100:.1f}% da altura), x {bx/W:.3f}→{bx1/W:.3f}")
             blur_boxes.append((bx, by, max(1, bx1 - bx), max(1, by1 - by)))
@@ -865,13 +875,16 @@ def processar_video_whisper_nativo(video_path):
                 # ilegível nos testes em 1080p e 4K — abaixo disso ainda se lia.
                 sig = int(max(12, min(150, h / 4)))
                 # O gblur perde força na BORDA do recorte (não tem vizinho pra
-                # puxar), então texto encostado na quina ficava legível. Dá uma
-                # folga vertical: no caso da tarja é preto liso, não muda nada.
+                # puxar), e texto encostado na quina ficava legível. Então
+                # recortamos uma faixa MAIOR só para o blur ter vizinhança e
+                # depois voltamos ao tamanho exato antes do overlay — o que vai
+                # para a tela é só a caixa medida, sem vazar para fora dela.
                 folga = sig // 2
-                y = max(0, y - folga)
-                h = min(H - y, h + 2 * folga)
+                ya = max(0, y - folga)
+                ha = min(H - ya, h + folga + (y - ya))
                 partes.append(f"[{prev}]split=2[{prev}a][{prev}t]")
-                partes.append(f"[{prev}t]crop={w}:{h}:{x}:{y},gblur=sigma={sig}[bl{i}]")
+                partes.append(f"[{prev}t]crop={w}:{ha}:{x}:{ya},gblur=sigma={sig},"
+                              f"crop={w}:{h}:0:{y - ya}[bl{i}]")
                 partes.append(f"[{prev}a][bl{i}]overlay={x}:{y}[v{i+1}]")
                 prev = f"v{i+1}"
             partes.append(f"[{prev}]ass={ass_basename}")
