@@ -7,6 +7,9 @@ Wants=network-online.target
 Type=simple
 User=luiz
 WorkingDirectory=/home/luiz/github/paparazzi-worker/painel
+# PYTHONUNBUFFERED: sem isso o print() so chega ao journal quando o buffer
+# enche e o log parece congelado (chegou a parecer que o editor travou).
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/luiz/github/paparazzi-worker/venv/bin/python manage.py rodar_poster --modo selenium
 # Parada graciosa: SIGTERM pede parada; o poster so encerra ENTRE posts.
 # TimeoutStopSec da tempo do post em andamento terminar antes do kill.

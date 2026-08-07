@@ -5,4 +5,7 @@ Description=Paparazzi Retencao (apaga arquivos de video > 24h, mantem metadados)
 Type=oneshot
 User=luiz
 WorkingDirectory=/home/luiz/github/paparazzi-worker/painel
+# PYTHONUNBUFFERED: sem isso o print() so chega ao journal quando o buffer
+# enche e o log parece congelado (chegou a parecer que o editor travou).
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/luiz/github/paparazzi-worker/venv/bin/python manage.py aplicar_retencao

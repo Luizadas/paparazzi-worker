@@ -11,10 +11,14 @@ cp "$REPO/systemd/paparazzi-watcher.service" \
    "$REPO/systemd/paparazzi-poster.service" \
    "$REPO/systemd/paparazzi-editor.service" \
    "$REPO/systemd/paparazzi-retencao.service" \
+   "$REPO/systemd/paparazzi-painel.service" \
    "$REPO/systemd/paparazzi-retencao.timer" /etc/systemd/system/
 
 echo "==> systemctl daemon-reload"
 systemctl daemon-reload
+
+echo "==> Painel SOBE NO BOOT (é o front; sem ele não dá para controlar nada)"
+systemctl enable --now paparazzi-painel.service
 
 echo "==> Habilitando a retenção automática (timer horário)"
 systemctl enable --now paparazzi-retencao.timer
