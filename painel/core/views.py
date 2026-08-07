@@ -236,7 +236,10 @@ def videos_lista(request):
     rows.sort(key=lambda r: (r["editado_em"] is not None,
                              r["editado_em"] or r["v"].criado_em.replace(tzinfo=None)),
               reverse=True)
-    return render(request, "core/videos.html", {"rows": rows})
+    # `status` alimenta o auto-refresh do template: rápido quando há serviço
+    # trabalhando (a lista muda a cada vídeo que fica pronto), lento quando não.
+    return render(request, "core/videos.html",
+                  {"rows": rows, "status": SistemaController().status()})
 
 
 def video_ver(request, video_id):
