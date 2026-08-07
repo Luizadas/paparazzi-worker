@@ -53,13 +53,18 @@ ALT_LETRA_LEGENDA = 0.0479     # altura da letra / altura do vídeo (medido: 184
 ANTON_ALT_POR_FS = 0.4977      # o libass renderiza a Anton a ~0,50 do fontsize
 DESLOC_LEGENDA = 0.01          # deslize vertical total, em fração da altura
 COR_LEGENDA = "&H00FFFFFF"          # branco (ASS é &HAABBGGRR)
-COR_LEGENDA_DESTAQUE = "&H00800000"  # azul marinho #000080
+COR_LEGENDA_DESTAQUE = "&H008F3A1A"  # azul marinho #1A3A8F (ASS é BGR)
 CICLO_COR_LEGENDA = 4          # 3 palavras brancas + 1 destacada
 
 # CAPA: o TikTok usa o 1º frame do vídeo como miniatura. Como espelhamos o vídeo,
 # esse frame sairia com o texto invertido — então emendamos o 1º frame ORIGINAL
 # (sem espelho e sem blur) por alguns segundos no início. 0 desliga.
 CAPA_SEGUNDOS = float(os.getenv("CAPA_SEGUNDOS", "1"))
+
+# No vídeo DIVIDIDO (tarja preta no meio), cobrimos a legenda original com uma
+# TARJA PRETA em vez de blur — o fundo ali já é preto. O fade é a faixa, em
+# fração da altura, onde o preto vai de opaco a transparente nas duas bordas.
+TARJA_FADE = float(os.getenv("TARJA_FADE", "0.006"))
 
 
 def _get_whisper():
@@ -142,6 +147,31 @@ def _tem_audio(video_path):
         return bool(out)
     except Exception:
         return True
+
+
+def _gerar_tarja_png(largura, altura, fade, destino):
+    """
+    Desenha a TARJA PRETA que cobre a legenda original no vídeo dividido: um
+    retângulo preto de `altura` com uma faixa de `fade` px em cima e embaixo onde
+    o preto vai de opaco a transparente. Assim a tarja não termina num corte reto
+    contra a cena/imagem — dissolve.
+
+    Devolve a altura total da imagem (altura + 2*fade) ou None se falhar.
+    """
+    try:
+        total = altura + 2 * fade
+        alpha = np.full(total, 255, dtype=np.float32)
+        if fade > 0:
+            rampa = np.linspace(0, 255, fade, endpoint=False)
+            alpha[:fade] = rampa
+            alpha[-fade:] = rampa[::-1]
+        img = np.zeros((total, largura, 4), dtype=np.uint8)     # RGB preto
+        img[:, :, 3] = alpha[:, None].astype(np.uint8)
+        Image.fromarray(img, mode="RGBA").save(destino)
+        return total
+    except Exception as e:
+        print(f"⚠️  não deu para gerar a tarja ({e}); usando blur.")
+        return None
 
 
 def _extrair_capa(video_path, destino):
@@ -853,6 +883,7 @@ def processar_video_whisper_nativo(video_path):
     audio_path = os.path.join(base_dir, f"{base_name}_audio.wav")
     final_output = os.path.join(base_dir, f"{base_name}_final.mp4")
     capa_path = os.path.join(base_dir, f"{base_name}_capa.jpg")
+    tarja_path = os.path.join(base_dir, f"{base_name}_tarja.png")
 
     # Passo 1: Extrair áudio para o Whisper
     print("Passo 1/3: Extraindo áudio para transcrição...")
@@ -919,16 +950,18 @@ def processar_video_whisper_nativo(video_path):
         # blur pelo ASS, então não precisa (nem deve) inflar a caixa — inflar era
         # o que gerava aquele retângulo cinza gigante sobre a cena.
         blur_boxes = []
+        tarja = None        # (y, altura_total_do_png) quando cobrimos com tarja
         if leg.get("tem_legenda"):
             bx = int(leg["x0"] * W); bx1 = int(leg["x1"] * W)
             by = int(leg["y0"] * H); by1 = int(leg["y1"] * H)
             if leg.get("faixa_total"):
-                # Tarja lisa de ponta a ponta (vídeo dividido) → largura total e
-                # altura EXATA da tarja medida: nada de margem, senão o blur
-                # invade a cena em cima e a imagem embaixo.
+                # VÍDEO DIVIDIDO (cena em cima, imagem embaixo, tarja preta no
+                # meio): em vez de borrar, desenhamos uma TARJA PRETA por cima —
+                # o fundo ali já é preto, então some com o texto sem deixar
+                # borrão. Fade suave nas bordas para não cortar reto na cena.
                 bx = 0; bx1 = W
-                print("   ↔️ Tarja original de ponta a ponta → blur na largura "
-                      "total, altura exata da tarja.")
+                print("   ↔️ Tarja original de ponta a ponta → cobre com TARJA "
+                      "PRETA (altura exata + fade nas bordas).")
             else:
                 # Texto solto sobre a cena: uma margem pequena ajuda a cobrir
                 # contorno/sombra das letras.
@@ -937,7 +970,11 @@ def processar_video_whisper_nativo(video_path):
                 by = max(0, by - int(0.004 * H)); by1 = min(H, by1 + int(0.004 * H))
             print(f"   🩹 Faixa da legenda: y {by/H:.3f}→{by1/H:.3f} "
                   f"({(by1-by)/H*100:.1f}% da altura), x {bx/W:.3f}→{bx1/W:.3f}")
-            blur_boxes.append((bx, by, max(1, bx1 - bx), max(1, by1 - by)))
+            fade = max(1, int(TARJA_FADE * H)) if leg.get("faixa_total") else 0
+            if fade and _gerar_tarja_png(W, by1 - by, fade, tarja_path):
+                tarja = (max(0, by - fade), (by1 - by) + 2 * fade)
+            else:
+                blur_boxes.append((bx, by, max(1, bx1 - bx), max(1, by1 - by)))
         if meme:
             mm = int(0.012 * W); mv = int(0.004 * H)
             mx = max(0, int(meme["x0"] * W) - mm)
@@ -948,42 +985,57 @@ def processar_video_whisper_nativo(video_path):
                   f"x {mx/W:.3f}→{mx1/W:.3f}")
             blur_boxes.append((mx, my, max(1, mx1 - mx), max(1, my1 - my)))
 
-        if blur_boxes:
-            # ATENÇÃO: as caixas foram medidas no vídeo ORIGINAL, mas o blur é
-            # aplicado DEPOIS do hflip → o X tem que ser espelhado (x → W-x-w),
-            # senão o blur cai no lado errado da tela.
-            blur_boxes = [(W - x - w, y, w, h) for (x, y, w, h) in blur_boxes]
+        # ATENÇÃO: as caixas foram medidas no vídeo ORIGINAL, mas a cobertura é
+        # aplicada DEPOIS do hflip → o X tem que ser espelhado (x → W-x-w),
+        # senão ela cai no lado errado da tela. (A tarja é full-width, não muda.)
+        blur_boxes = [(W - x - w, y, w, h) for (x, y, w, h) in blur_boxes]
 
-            # Cadeia de blurs localizados (gblur) + a legenda/meme por cima (ass)
-            partes = ["[0:v]hflip[v0]"]
-            prev = "v0"
-            for i, (x, y, w, h) in enumerate(blur_boxes):
-                # Força proporcional à ALTURA da faixa (é ela que dá a escala do
-                # traço das letras). h/4 foi o mínimo que deixou o texto original
-                # ilegível nos testes em 1080p e 4K — abaixo disso ainda se lia.
-                sig = int(max(12, min(150, h / 4)))
-                # O gblur perde força na BORDA do recorte (não tem vizinho pra
-                # puxar), e texto encostado na quina ficava legível. Então
-                # recortamos uma faixa MAIOR só para o blur ter vizinhança e
-                # depois voltamos ao tamanho exato antes do overlay — o que vai
-                # para a tela é só a caixa medida, sem vazar para fora dela.
-                folga = sig // 2
-                ya = max(0, y - folga)
-                ha = min(H - ya, h + folga + (y - ya))
-                partes.append(f"[{prev}]split=2[{prev}a][{prev}t]")
-                partes.append(f"[{prev}t]crop={w}:{ha}:{x}:{ya},gblur=sigma={sig},"
-                              f"crop={w}:{h}:0:{y - ya}[bl{i}]")
-                partes.append(f"[{prev}a][bl{i}]overlay={x}:{y}[v{i+1}]")
-                prev = f"v{i+1}"
-            # fontsdir: a Anton vive no repo, não instalada no sistema
-            partes.append(f"[{prev}]ass={ass_basename}:fontsdir={DIR_FONTES}[corpo]")
-            print(f"🎬 Cobertura: {len(blur_boxes)} blur(s) "
-                  f"({'legenda' if leg.get('tem_legenda') else ''}"
-                  f"{'+meme' if meme else ''}).")
-        else:
-            # Sem legenda nem meme no original → só espelha; nossa legenda embaixo
-            partes = [f"[0:v]hflip,ass={ass_basename}:fontsdir={DIR_FONTES}[corpo]"]
-            print("🎬 Sem cobertura (legenda embaixo).")
+        fps = _fps_video(video_path)
+        dur = _duracao_video(video_path)
+        # Entradas do ffmpeg: 0 = vídeo; depois, se houver, a cartela de capa e a
+        # imagem da tarja. Os índices são calculados aqui para o filtro casar.
+        entradas = ["-i", video_basename]
+        idx_capa = idx_tarja = None
+        if tarja:
+            idx_tarja = len(entradas) // 2
+            entradas += ["-framerate", f"{fps:.6f}", "-loop", "1",
+                         "-t", f"{dur + CAPA_SEGUNDOS + 1:.2f}",
+                         "-i", os.path.basename(tarja_path)]
+        usar_capa = CAPA_SEGUNDOS > 0 and _extrair_capa(video_path, capa_path)
+        if usar_capa:
+            idx_capa = 1 + (1 if tarja else 0)
+            entradas += ["-framerate", f"{fps:.6f}", "-loop", "1",
+                         "-t", f"{CAPA_SEGUNDOS}", "-i", os.path.basename(capa_path)]
+
+        partes = ["[0:v]hflip[v0]"]
+        prev = "v0"
+        for i, (x, y, w, h) in enumerate(blur_boxes):
+            # Força proporcional à ALTURA da faixa (é ela que dá a escala do
+            # traço das letras). h/4 foi o mínimo que deixou o texto original
+            # ilegível nos testes em 1080p e 4K — abaixo disso ainda se lia.
+            sig = int(max(12, min(150, h / 4)))
+            # O gblur perde força na BORDA do recorte (não tem vizinho pra
+            # puxar), e texto encostado na quina ficava legível. Então
+            # recortamos uma faixa MAIOR só para o blur ter vizinhança e
+            # depois voltamos ao tamanho exato antes do overlay — o que vai
+            # para a tela é só a caixa medida, sem vazar para fora dela.
+            folga = sig // 2
+            ya = max(0, y - folga)
+            ha = min(H - ya, h + folga + (y - ya))
+            partes.append(f"[{prev}]split=2[{prev}a][{prev}t]")
+            partes.append(f"[{prev}t]crop={w}:{ha}:{x}:{ya},gblur=sigma={sig},"
+                          f"crop={w}:{h}:0:{y - ya}[bl{i}]")
+            partes.append(f"[{prev}a][bl{i}]overlay={x}:{y}[v{i+1}]")
+            prev = f"v{i+1}"
+        if tarja:
+            partes.append(f"[{prev}][{idx_tarja}:v]overlay=0:{tarja[0]}[vt]")
+            prev = "vt"
+        # fontsdir: a Anton vive no repo, não instalada no sistema
+        partes.append(f"[{prev}]ass={ass_basename}:fontsdir={DIR_FONTES}[corpo]")
+        print(f"🎬 Cobertura: {'tarja preta' if tarja else ''}"
+              f"{' + ' if tarja and blur_boxes else ''}"
+              f"{f'{len(blur_boxes)} blur(s)' if blur_boxes else ''}"
+              f"{'nenhuma (legenda embaixo)' if not tarja and not blur_boxes else ''}.")
 
         # CAPA: o TikTok usa o PRIMEIRO FRAME como miniatura, e no nosso vídeo ele
         # sai espelhado (o título do original fica ilegível). Então emendamos o
@@ -991,14 +1043,9 @@ def processar_video_whisper_nativo(video_path):
         # cartela de CAPA_SEGUNDOS no começo. O áudio é atrasado igual, para não
         # sair de sincronia; a legenda é queimada no corpo, então os tempos dela
         # não mudam.
-        entradas = ["-i", video_basename]
         mapeia = []
-        if CAPA_SEGUNDOS > 0 and _extrair_capa(video_path, capa_path):
-            fps = _fps_video(video_path)
-            entradas = ["-i", video_basename,
-                        "-framerate", f"{fps:.6f}", "-loop", "1",
-                        "-t", f"{CAPA_SEGUNDOS}", "-i", os.path.basename(capa_path)]
-            partes.append(f"[1:v]scale={W}:{H},setsar=1,fps={fps:.6f},"
+        if usar_capa:
+            partes.append(f"[{idx_capa}:v]scale={W}:{H},setsar=1,fps={fps:.6f},"
                           f"format=yuv420p[capa]")
             partes.append("[capa][corpo]concat=n=2:v=1:a=0[vout]")
             mapeia = ["-map", "[vout]"]
@@ -1022,7 +1069,8 @@ def processar_video_whisper_nativo(video_path):
         # para sabermos se este vídeo saiu antes ou depois de cada mudança.
         registrar_processamento(
             video_path, deteccao=leg, saida=final_output,
-            extra={"n_cues": n_cues, "fs": fs, "cobertura": len(blur_boxes)})
+            extra={"n_cues": n_cues, "fs": fs, "cobertura": len(blur_boxes),
+                   "tarja": bool(tarja)})
 
         # Espelha no banco de controle (Postgres) — best-effort, não bloqueia.
         # NÃO manda título: o título do post no canal ORIGINAL é gravado pelo
@@ -1045,7 +1093,7 @@ def processar_video_whisper_nativo(video_path):
         print(f"❌ Erro ao processar FFmpeg final: {e.stderr.decode('utf-8', errors='ignore')}")
 
     # Limpeza
-    for temp_file in [audio_path, ass_path, capa_path, video_path]:
+    for temp_file in [audio_path, ass_path, capa_path, tarja_path, video_path]:
         if os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
