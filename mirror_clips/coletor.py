@@ -428,26 +428,37 @@ def _medir_faixa(A, y0f, y1f):
         ytop = min(ytop, bloco_fraco[0]); ybase = max(ybase, bloco_fraco[1])
 
     cy_texto = (ytop + ybase + 1) / 2 / H     # centro do texto, antes da tarja
+    txt0, txt1 = ytop, ybase                  # extensão só do texto (p/ medir o quanto cresceu)
 
     # 2) Linhas de TARJA: lisas de ponta a ponta (std baixo) e escuras. A cena do
     #    vídeo, mesmo escura, tem std alto — é isso que antes fazia a "tarja"
     #    engolir metade da tela.
     barra = (prof["std"] < 20) & (prof["dark"] >= 0.7)
 
-    # 3) Cresce a faixa para dentro da tarja, com teto (tarja não é meia tela).
-    teto = max(4, int(0.05 * H))
-    cima = 0
-    while cima < teto and ytop - 1 >= 0 and barra[ytop - 1]:
-        ytop -= 1; cima += 1
-    baixo = 0
-    while baixo < teto and ybase + 1 < H and barra[ybase + 1]:
-        ybase += 1; baixo += 1
-    faixa_total = (cima + baixo) >= max(3, int(0.004 * H)) and \
+    # 3) Vídeo DIVIDIDO (cena em cima, imagem embaixo, tarja preta no meio): a
+    #    faixa a cobrir é a TARJA INTEIRA, não só a linha de texto que o OCR
+    #    achou. A tarja costuma ter mais de um elemento (título fixo em cima,
+    #    karaokê embaixo) e cobrir só um deixa o outro à mostra.
+    #
+    #    Como achar a tarja inteira sem invadir a cena: pegamos o bloco contíguo
+    #    de linhas ESCURAS que contém o texto (linha com texto continua escura —
+    #    as letras ocupam pouca largura) e o aparamos até a última linha LISA de
+    #    cada lado. Cena escura não tem linha lisa, então o corte cai na borda
+    #    real da tarja — era esse aparo que faltava.
+    escura = prof["dark"] >= 0.7
+    teto_barra = max(6, int(0.30 * H))
+    b0, b1 = ytop, ybase
+    while b0 - 1 >= 0 and escura[b0 - 1] and (ybase - b0) < teto_barra:
+        b0 -= 1
+    while b1 + 1 < H and escura[b1 + 1] and (b1 - ytop) < teto_barra:
+        b1 += 1
+    lisas = np.where(barra[b0:b1 + 1])[0]
+    if lisas.size:
+        ytop = min(ytop, b0 + int(lisas[0]))
+        ybase = max(ybase, b0 + int(lisas[-1]))
+    cresceu = (txt0 - ytop) + (ybase - txt1)
+    faixa_total = cresceu >= max(3, int(0.004 * H)) and \
                   float(np.median(prof["dark"][ytop:ybase + 1])) >= 0.6
-    # Vídeo DIVIDIDO (cena em cima, imagem embaixo, tarja preta no meio): a faixa
-    # a cobrir é EXATAMENTE a tarja — ela já vai de ponta a ponta e o texto está
-    # todo dentro dela. Passar disso borra a cena/imagem de graça, que era o que
-    # aparecia como véu cinza acima e abaixo da tarja.
 
     # 4) Extensão horizontal real do texto (colunas com borda dentro da faixa).
     #    Percentil alto entre frames: cada frase ocupa colunas diferentes, então a
@@ -549,6 +560,94 @@ def _variacao_temporal(A, box):
     if y1 - y0 < 4 or x1 - x0 < 4:
         return None
     return A[:, y0:y1, x0:x1].std(axis=0)
+
+
+def _caixa_texto_no_frame(g, jan0, jan1, piso):
+    """
+    Acha a caixa do texto NUM ÚNICO frame, dentro da janela de linhas [jan0,jan1).
+    Devolve (x0,x1,y0,y1) em pixels ou None se aquele frame não tem texto ali.
+
+    `piso` é a densidade de borda mínima para considerar que há texto — vem do
+    vídeo inteiro, senão um frame sem legenda "acha" texto no ruído da cena.
+    """
+    janela = g[jan0:jan1]
+    if janela.shape[0] < 4:
+        return None
+    d = np.abs(np.diff(janela, axis=1))
+    linhas = (d > 40).mean(axis=1)
+    if float(linhas.max()) < piso:
+        return None                      # nada de texto neste frame
+    lim = max(piso, 0.35 * float(linhas.max()))
+    idx = np.where(linhas >= lim)[0]
+    if idx.size < 2:
+        return None
+    grupos = np.split(idx, np.where(np.diff(idx) > 4)[0] + 1)
+    g_maior = max(grupos, key=len)
+    y0, y1 = int(g_maior[0]), int(g_maior[-1])
+    if y1 - y0 < 2:
+        return None
+    cols = (d[y0:y1 + 1] > 40).mean(axis=0)
+    ic = np.where(cols >= max(0.05, 0.25 * float(cols.max())))[0]
+    if ic.size < 2:
+        return None
+    return int(ic.min()), int(ic.max()) + 1, jan0 + y0, jan0 + y1 + 1
+
+
+def _medir_segmentos(A, y0f, y1f, duracao, minimo_seg=0.35):
+    """
+    Para o vídeo SEM tarja: em vez de uma caixa fixa para o filme inteiro (que
+    precisa ser a união de todas as posições da legenda e fica enorme), mede a
+    caixa QUADRO A QUADRO e agrupa em TRECHOS — cada trecho vira uma cobertura
+    própria, ligada só no intervalo de tempo dele.
+
+    Devolve lista de {t0,t1,x0,x1,y0,y1} (tempo em segundos, resto em frações)
+    ou [] se não der para segmentar com segurança.
+    """
+    n, H, W = A.shape
+    if n < 6 or duracao <= 0:
+        return []
+    jan0 = max(0, int((y0f - 0.05) * H))
+    jan1 = min(H, int((y1f + 0.05) * H))
+    # piso de evidência: metade da mediana do pico de borda dos frames COM texto
+    picos = []
+    for g in A:
+        d = np.abs(np.diff(g[jan0:jan1], axis=1))
+        picos.append(float((d > 40).mean(axis=1).max()) if jan1 > jan0 else 0.0)
+    if not picos:
+        return []
+    piso = max(0.012, 0.45 * float(np.median(picos)))
+
+    passo = duracao / n
+    caixas = [_caixa_texto_no_frame(g, jan0, jan1, piso) for g in A]
+
+    # Um buraco isolado no meio do texto é falha de medição, não fim do trecho.
+    for i in range(1, len(caixas) - 1):
+        if caixas[i] is None and caixas[i - 1] is not None and caixas[i + 1] is not None:
+            caixas[i] = caixas[i - 1]
+
+    segmentos, atual = [], []
+    for i, c in enumerate(caixas + [None]):
+        if c is not None:
+            atual.append((i, c))
+            continue
+        if atual:
+            xs0 = min(b[0] for _, b in atual); xs1 = max(b[1] for _, b in atual)
+            ys0 = min(b[2] for _, b in atual); ys1 = max(b[3] for _, b in atual)
+            i0, i1 = atual[0][0], atual[-1][0]
+            # estende meio passo para cada lado (entre amostras não sabemos nada)
+            t0 = max(0.0, (i0 + 0.5) * passo - passo * 0.6)
+            t1 = min(duracao, (i1 + 0.5) * passo + passo * 0.6)
+            if t1 - t0 >= minimo_seg:
+                mx, my = int(0.008 * W), int(0.006 * H)
+                segmentos.append({
+                    "t0": round(t0, 2), "t1": round(t1, 2),
+                    "x0": round(max(0, xs0 - mx) / W, 4),
+                    "x1": round(min(W, xs1 + mx) / W, 4),
+                    "y0": round(max(0, ys0 - my) / H, 4),
+                    "y1": round(min(H, ys1 + my) / H, 4),
+                })
+            atual = []
+    return segmentos
 
 
 def _regiao_estatica(A, box, limite=4.0):

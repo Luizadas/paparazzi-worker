@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 
 # Bump a cada mudança relevante na LÓGICA de processamento (não em bug trivial).
-SISTEMA_VERSAO = "1.6.0"
+SISTEMA_VERSAO = "1.6.1"
 
 # Histórico curto — o que mudou em cada versão da lógica de processamento.
 CHANGELOG = {
@@ -30,6 +30,8 @@ CHANGELOG = {
               "no início, com áudio atrasado igual — é a miniatura do TikTok."),
     "1.6.0": ("Vídeo dividido: TARJA PRETA (com fade nas bordas) no lugar do blur, "
               "e o azul da legenda vira marinho #1A3A8F."),
+    "1.6.1": ("A tarja cobre a FAIXA PRETA INTEIRA (título fixo + karaokê), não só "
+              "a linha que o OCR achou — o título ficava à mostra."),
 }
 
 # Onde gravamos o log de proveniência (append-only).
