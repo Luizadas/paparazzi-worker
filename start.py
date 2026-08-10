@@ -21,7 +21,8 @@ REQ_FILE = ROOT / "requirements.txt"
 VENV_DIR = ROOT / "venv"
 PAINEL_DIR = ROOT / "painel"
 PAINEL_HOST = os.getenv("PAINEL_HOST", "127.0.0.1")
-PAINEL_PORT = int(os.getenv("PAINEL_PORT", "8000"))
+# 8000 é usada por outro sistema nesta máquina; o painel vive na 8010.
+PAINEL_PORT = int(os.getenv("PAINEL_PORT", "8010"))
 
 _painel_proc = None
 

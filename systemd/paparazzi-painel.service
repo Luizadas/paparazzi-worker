@@ -1,5 +1,5 @@
 [Unit]
-Description=Paparazzi Painel (front de controle em http://127.0.0.1:8000)
+Description=Paparazzi Painel (front de controle em http://127.0.0.1:8010)
 # O painel depende do Postgres, que nesta maquina sobe um pouco depois do boot.
 # Restart=always cobre o caso de ele subir antes do banco estar pronto.
 After=network-online.target
@@ -12,7 +12,10 @@ WorkingDirectory=/home/luiz/github/paparazzi-worker/painel
 # PYTHONUNBUFFERED: sem isso o print() so chega ao journal quando o buffer enche
 # e o log parece congelado (ja enganou o diagnostico de "editor travado").
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/luiz/github/paparazzi-worker/venv/bin/python manage.py runserver 127.0.0.1:8000 --noreload
+# A porta 8000 e de outro sistema desta maquina. Para trocar, mude aqui
+# (e em PAINEL_PORT no .env, que o start.py le).
+Environment=PAINEL_PORT=8010
+ExecStart=/home/luiz/github/paparazzi-worker/venv/bin/python manage.py runserver 127.0.0.1:${PAINEL_PORT} --noreload
 Restart=always
 RestartSec=5
 
