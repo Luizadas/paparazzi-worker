@@ -51,6 +51,11 @@ RAIZ_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIR_FONTES = os.path.join(RAIZ_REPO, "assets", "fontes")   # Anton.ttf (sem instalar)
 ALT_LETRA_LEGENDA = 0.0479     # altura da letra / altura do vídeo (medido: 184/3840)
 ANTON_ALT_POR_FS = 0.4977      # o libass renderiza a Anton a ~0,50 do fontsize
+# O \an5 centraliza a CAIXA da linha (do topo do acento ao pé da descida) e não a
+# TINTA. Como escrevemos em MAIÚSCULAS, a descida fica vazia e a letra cai abaixo
+# do ponto pedido. Medido na Anton com "EMPREGO" (sem descida) em fs 90/185/370:
+# 0,0611 / 0,0622 / 0,0622 do fontsize — é métrica da fonte, não varia com o tamanho.
+ANTON_TINTA_ABAIXO = 0.0622    # quanto a tinta desce, em fração do fontsize
 DESLOC_LEGENDA = 0.01          # deslize vertical total, em fração da altura
 COR_LEGENDA = "&H00FFFFFF"          # branco (ASS é &HAABBGGRR)
 COR_LEGENDA_DESTAQUE = "&H008F3A1A"  # azul marinho #1A3A8F (ASS é BGR)
@@ -65,6 +70,10 @@ CAPA_SEGUNDOS = float(os.getenv("CAPA_SEGUNDOS", "1"))
 # TARJA PRETA em vez de blur — o fundo ali já é preto. O fade é a faixa, em
 # fração da altura, onde o preto vai de opaco a transparente nas duas bordas.
 TARJA_FADE = float(os.getenv("TARJA_FADE", "0.006"))
+
+# Folga máxima (fração da altura) que a medição em pixels pode acrescentar à banda
+# LIDA pelo OCR quando a legenda está solta sobre a cena, sem tarja atrás.
+TOL_SEM_TARJA = float(os.getenv("TOL_SEM_TARJA", "0.008"))
 
 
 def _get_whisper():
@@ -542,6 +551,38 @@ def _escolher_banda(caixas, A, n_frames):
     return melhor
 
 
+def _absorver_linha_vizinha(banda, caixas):
+    """
+    A banda escolhida agrupa caixas por centro (|Δyc| < 0.035) — uma legenda de
+    DUAS linhas cai em dois grupos e só um seria coberto. Traz de volta as caixas
+    que são, claramente, a outra linha do MESMO bloco: coladas na vertical (vão
+    menor que a altura de uma linha) e sobrepostas na horizontal.
+
+    Só entra texto que o OCR realmente LEU — nada de crescer por cima da cena.
+    """
+    if not banda:
+        return banda
+    alt = float(np.median([b["y1"] - b["y0"] for b in banda]))
+    x0 = float(np.percentile([b["x0"] for b in banda], 5))
+    x1 = float(np.percentile([b["x1"] for b in banda], 95))
+    dentro = {id(b) for b in banda}
+    extra = []
+    for b in caixas:
+        if id(b) in dentro:
+            continue
+        y0 = min(c["y0"] for c in banda); y1 = max(c["y1"] for c in banda)
+        vao = b["y0"] - y1 if b["y0"] > y1 else y0 - b["y1"]
+        if vao > alt:                      # longe demais: outra coisa na tela
+            continue
+        sobra = min(b["x1"], x1) - max(b["x0"], x0)
+        if sobra <= 0.3 * min(b["x1"] - b["x0"], x1 - x0):
+            continue                       # não está sob/sobre a legenda
+        extra.append(b)
+    if extra:
+        print(f"   ↕️  {len(extra)} caixa(s) de outra linha da legenda absorvidas.")
+    return banda + extra
+
+
 def _texto_dinamico(grupo):
     """True se o texto da faixa MUDA ao longo do vídeo — legenda acompanhando a
     fala, e não um letreiro fixo."""
@@ -560,94 +601,6 @@ def _variacao_temporal(A, box):
     if y1 - y0 < 4 or x1 - x0 < 4:
         return None
     return A[:, y0:y1, x0:x1].std(axis=0)
-
-
-def _caixa_texto_no_frame(g, jan0, jan1, piso):
-    """
-    Acha a caixa do texto NUM ÚNICO frame, dentro da janela de linhas [jan0,jan1).
-    Devolve (x0,x1,y0,y1) em pixels ou None se aquele frame não tem texto ali.
-
-    `piso` é a densidade de borda mínima para considerar que há texto — vem do
-    vídeo inteiro, senão um frame sem legenda "acha" texto no ruído da cena.
-    """
-    janela = g[jan0:jan1]
-    if janela.shape[0] < 4:
-        return None
-    d = np.abs(np.diff(janela, axis=1))
-    linhas = (d > 40).mean(axis=1)
-    if float(linhas.max()) < piso:
-        return None                      # nada de texto neste frame
-    lim = max(piso, 0.35 * float(linhas.max()))
-    idx = np.where(linhas >= lim)[0]
-    if idx.size < 2:
-        return None
-    grupos = np.split(idx, np.where(np.diff(idx) > 4)[0] + 1)
-    g_maior = max(grupos, key=len)
-    y0, y1 = int(g_maior[0]), int(g_maior[-1])
-    if y1 - y0 < 2:
-        return None
-    cols = (d[y0:y1 + 1] > 40).mean(axis=0)
-    ic = np.where(cols >= max(0.05, 0.25 * float(cols.max())))[0]
-    if ic.size < 2:
-        return None
-    return int(ic.min()), int(ic.max()) + 1, jan0 + y0, jan0 + y1 + 1
-
-
-def _medir_segmentos(A, y0f, y1f, duracao, minimo_seg=0.35):
-    """
-    Para o vídeo SEM tarja: em vez de uma caixa fixa para o filme inteiro (que
-    precisa ser a união de todas as posições da legenda e fica enorme), mede a
-    caixa QUADRO A QUADRO e agrupa em TRECHOS — cada trecho vira uma cobertura
-    própria, ligada só no intervalo de tempo dele.
-
-    Devolve lista de {t0,t1,x0,x1,y0,y1} (tempo em segundos, resto em frações)
-    ou [] se não der para segmentar com segurança.
-    """
-    n, H, W = A.shape
-    if n < 6 or duracao <= 0:
-        return []
-    jan0 = max(0, int((y0f - 0.05) * H))
-    jan1 = min(H, int((y1f + 0.05) * H))
-    # piso de evidência: metade da mediana do pico de borda dos frames COM texto
-    picos = []
-    for g in A:
-        d = np.abs(np.diff(g[jan0:jan1], axis=1))
-        picos.append(float((d > 40).mean(axis=1).max()) if jan1 > jan0 else 0.0)
-    if not picos:
-        return []
-    piso = max(0.012, 0.45 * float(np.median(picos)))
-
-    passo = duracao / n
-    caixas = [_caixa_texto_no_frame(g, jan0, jan1, piso) for g in A]
-
-    # Um buraco isolado no meio do texto é falha de medição, não fim do trecho.
-    for i in range(1, len(caixas) - 1):
-        if caixas[i] is None and caixas[i - 1] is not None and caixas[i + 1] is not None:
-            caixas[i] = caixas[i - 1]
-
-    segmentos, atual = [], []
-    for i, c in enumerate(caixas + [None]):
-        if c is not None:
-            atual.append((i, c))
-            continue
-        if atual:
-            xs0 = min(b[0] for _, b in atual); xs1 = max(b[1] for _, b in atual)
-            ys0 = min(b[2] for _, b in atual); ys1 = max(b[3] for _, b in atual)
-            i0, i1 = atual[0][0], atual[-1][0]
-            # estende meio passo para cada lado (entre amostras não sabemos nada)
-            t0 = max(0.0, (i0 + 0.5) * passo - passo * 0.6)
-            t1 = min(duracao, (i1 + 0.5) * passo + passo * 0.6)
-            if t1 - t0 >= minimo_seg:
-                mx, my = int(0.008 * W), int(0.006 * H)
-                segmentos.append({
-                    "t0": round(t0, 2), "t1": round(t1, 2),
-                    "x0": round(max(0, xs0 - mx) / W, 4),
-                    "x1": round(min(W, xs1 + mx) / W, 4),
-                    "y0": round(max(0, ys0 - my) / H, 4),
-                    "y1": round(min(H, ys1 + my) / H, 4),
-                })
-            atual = []
-    return segmentos
 
 
 def _regiao_estatica(A, box, limite=4.0):
@@ -785,11 +738,16 @@ def detectar_legenda_ocr(video_path, n=N_FRAMES_PIXEL, n_ocr=N_FRAMES_OCR):
         if len(melhor) < 3:
             return {"tem_legenda": False, "meme": meme}   # sem legenda persistente
 
+        melhor = _absorver_linha_vizinha(melhor, caixas)
+
         # Banda APROXIMADA do OCR (percentis no X p/ ignorar outliers) + margem
         x0 = float(np.percentile([b["x0"] for b in melhor], 5))
         x1 = float(np.percentile([b["x1"] for b in melhor], 95))
         y0 = min(b["y0"] for b in melhor)
         y1 = max(b["y1"] for b in melhor)
+        # Guardadas SEM margem: é onde o OCR de fato LEU texto, em todos os frames.
+        # Viram o limite do que a medição em pixels pode cobrir quando não há tarja.
+        y0_lido, y1_lido = y0, y1
         x0 = max(0.0, x0 - 0.02); x1 = min(1.0, x1 + 0.02)
         y0 = max(0.0, y0 - 0.015); y1 = min(1.0, y1 + 0.015)
 
@@ -800,9 +758,23 @@ def detectar_legenda_ocr(video_path, n=N_FRAMES_PIXEL, n_ocr=N_FRAMES_OCR):
         cy = (y0 + y1) / 2
         med = _medir_faixa(A, y0, y1) if A is not None else None
         if med:
-            y0, y1 = med["y0"], med["y1"]
             faixa_total = med["faixa_total"]
             cy = med["cy_texto"]      # nossa legenda vai onde estava o texto
+            if faixa_total:
+                # Sobre TARJA PRETA a medição manda: ela acha a barra inteira, que
+                # é maior que o texto lido (título fixo + karaokê). Validado em 1.6.1.
+                y0, y1 = med["y0"], med["y1"]
+            else:
+                # Texto SOLTO sobre a cena: aqui o crescimento por bordas não vale —
+                # cena tem borda em todo lugar e a faixa estourava para a janela
+                # inteira (medido: 16,3% da tela para uma legenda de 5,0%). A banda
+                # LIDA pelo OCR é a âncora; a medição só pode APERTAR, ou folgar no
+                # máximo TOL_SEM_TARJA de cada lado (acento em cima, pé embaixo).
+                y0 = min(max(med["y0"], y0_lido - TOL_SEM_TARJA), y0_lido)
+                y1 = max(min(med["y1"], y1_lido + TOL_SEM_TARJA), y1_lido)
+                # E a nossa legenda vai no centro TÍPICO do texto lido, não no centro
+                # da medição (que carrega o erro da cena junto).
+                cy = float(np.median([b["yc"] for b in melhor]))
             # X: a medição pode alargar a caixa do OCR, mas só um pouco (o texto
             # pode ter glifos que o OCR cortou; o resto da linha é cena).
             x0 = max(0.0, max(min(x0, med["x0"]), x0 - 0.06))
@@ -821,10 +793,13 @@ def detectar_legenda_ocr(video_path, n=N_FRAMES_PIXEL, n_ocr=N_FRAMES_OCR):
             return {"tem_legenda": False, "meme": meme}
 
         # Sempre BLUR (sem tarja) na legenda; 'meme' preserva a frase do topo.
+        # float() explícito: parte destes valores vem do numpy e np.float64 não é
+        # serializável em JSON (proveniência/banco).
         return {"tem_legenda": True,
-                "x0": round(x0, 4), "x1": round(x1, 4),
-                "y0": round(y0, 4), "y1": round(y1, 4),
-                "cy": round(cy, 4), "faixa_total": faixa_total, "meme": meme}
+                "x0": round(float(x0), 4), "x1": round(float(x1), 4),
+                "y0": round(float(y0), 4), "y1": round(float(y1), 4),
+                "cy": round(float(cy), 4), "faixa_total": bool(faixa_total),
+                "meme": meme}
     except Exception as e:
         print(f"⚠️ Detecção OCR falhou ({e}); legenda irá para baixo, sem cobertura.")
         return {"tem_legenda": False}
@@ -895,6 +870,10 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, duracao=None,
     if max_chars > 0:
         fs = min(fs, max(24, int(0.92 * W / (0.32 * max_chars))))
     dy = max(1, int(round(DESLOC_LEGENDA * H / 2)))     # metade p/ cada lado
+    # `centro_y_px` é onde a TINTA deve ficar (é lá que estava o texto original).
+    # O \an5 centraliza a caixa da linha, que tem espaço de descida sobrando — sem
+    # descontar, a legenda sai visivelmente mais baixa que a do vídeo original.
+    cy_px = int(round(centro_y_px - ANTON_TINTA_ABAIXO * fs))
     borda = max(2, int(fs * 0.05)) if contorno else 0
     header = (
         "[Script Info]\n"
@@ -919,7 +898,7 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, duracao=None,
         cor = "" if (i + 1) % CICLO_COR_LEGENDA else f"\\c{COR_LEGENDA_DESTAQUE}"
         linhas.append(
             f"Dialogue: 0,{_fmt_ass_ts(st)},{_fmt_ass_ts(en)},Kar,,0,0,0,,"
-            f"{{\\an5{cor}\\move({cx},{centro_y_px + dy},{cx},{centro_y_px - dy})}}{txt}"
+            f"{{\\an5{cor}\\move({cx},{cy_px + dy},{cx},{cy_px - dy})}}{txt}"
         )
 
     # Frase de MEME no topo: evento ESTÁTICO (dura o vídeo todo), reescrito sobre
@@ -932,7 +911,7 @@ def gerar_ass_legenda(segments, ass_path, W, H, centro_y_px, duracao=None,
         # O meme foi localizado no vídeo ORIGINAL e o ASS entra DEPOIS do hflip →
         # espelha o X para o texto cair exatamente sobre o blur do topo.
         mcx = W - int((meme["x0"] + meme["x1"]) / 2 * W)
-        mcy = int((meme["y0"] + meme["y1"]) / 2 * H)
+        mcy = int(round((meme["y0"] + meme["y1"]) / 2 * H - ANTON_TINTA_ABAIXO * mfs))
         texto_meme = "\\N".join(linhas_meme)
         linhas.append(
             f"Dialogue: 0,0:00:00.00,9:59:59.99,Kar,,0,0,0,,"
