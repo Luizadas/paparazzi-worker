@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 
 # Bump a cada mudança relevante na LÓGICA de processamento (não em bug trivial).
-SISTEMA_VERSAO = "1.7.1"
+SISTEMA_VERSAO = "1.8.0"
 
 # Histórico curto — o que mudou em cada versão da lógica de processamento.
 CHANGELOG = {
@@ -39,6 +39,9 @@ CHANGELOG = {
     "1.7.1": ("Vídeo com TARJA: a nossa legenda vai no CENTRO da tarja (e não "
               "onde estava o texto deles, que podia ficar colado na borda) e a "
               "faixa tem teto de 17% da altura — acima disso vale a banda do OCR."),
+    "1.8.0": ("Identidade da tarja: destaque da legenda e borda da tarja em ciano "
+              "#00FFFF, e o formato sem barra original também passa a ser TARJA "
+              "PRETA (caixa do tamanho que o blur cobria, teto de 9% da altura)."),
 }
 
 # Onde gravamos o log de proveniência (append-only).

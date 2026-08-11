@@ -68,7 +68,9 @@ ANTON_ALT_POR_FS = 0.4977      # o libass renderiza a Anton a ~0,50 do fontsize
 ANTON_TINTA_ABAIXO = 0.0622    # quanto a tinta desce, em fração do fontsize
 DESLOC_LEGENDA = 0.01          # deslize vertical total, em fração da altura
 COR_LEGENDA = "&H00FFFFFF"          # branco (ASS é &HAABBGGRR)
-COR_LEGENDA_DESTAQUE = "&H008F3A1A"  # azul marinho #1A3A8F (ASS é BGR)
+# Ciano #00FFFF. O ASS é BGR: R=00,G=FF,B=FF → BB=FF, GG=FF, RR=00.
+COR_LEGENDA_DESTAQUE = "&H00FFFF00"
+COR_MARCA_RGB = (0, 255, 255)   # o mesmo #00FFFF em RGB, para desenhar no PIL
 CICLO_COR_LEGENDA = 4          # 3 palavras brancas + 1 destacada
 
 # CAPA: o TikTok usa o 1º frame do vídeo como miniatura. Como espelhamos o vídeo,
@@ -89,6 +91,14 @@ TOL_SEM_TARJA = float(os.getenv("TOL_SEM_TARJA", "0.008"))
 # perdida e vale a banda lida pelo OCR. Medido: tarjas reais vão de 9,9% a 15,4%;
 # as medições erradas davam 18,1% e 20,1%.
 TETO_FAIXA = float(os.getenv("TETO_FAIXA", "0.17"))
+
+# Teto da CAIXA preta do formato sem barra original. Medido nos vídeos reais, já
+# com a margem que o render acrescenta: as caixas pintadas ficam entre 6,8% e
+# 8,4% da altura (a maior é a do IptzIagbeAA, a referência aprovada). Acima disso
+# o retângulo preto começa a atrapalhar a cena, então voltamos ao blur — que
+# cobre igual sem pintar um bloco grande. O teto limita o TAMANHO DA TARJA,
+# nunca a cobertura.
+TETO_CAIXA = float(os.getenv("TETO_CAIXA", "0.09"))
 
 
 def _get_whisper():
@@ -173,26 +183,51 @@ def _tem_audio(video_path):
         return True
 
 
-def _gerar_tarja_png(largura, altura, fade, destino):
+def _gerar_tarja_png(largura, altura, fade, destino, laterais=False):
     """
-    Desenha a TARJA PRETA que cobre a legenda original no vídeo dividido: um
-    retângulo preto de `altura` com uma faixa de `fade` px em cima e embaixo onde
-    o preto vai de opaco a transparente. Assim a tarja não termina num corte reto
-    contra a cena/imagem — dissolve.
+    Desenha a TARJA que cobre a legenda original: um retângulo PRETO com uma
+    faixa de `fade` px nas bordas, onde a tarja vai de opaca a transparente —
+    assim ela não termina num corte reto contra a cena, dissolve.
 
-    Devolve a altura total da imagem (altura + 2*fade) ou None se falhar.
+    O fade é pintado na COR DA MARCA (a mesma do destaque da legenda), e não em
+    preto: é o que dá identidade à tarja em vez de ser só um retângulo escuro.
+    O miolo continua preto puro, que é o fundo em que a legenda se lê melhor.
+
+    `laterais=True` faz o mesmo nas bordas esquerda/direita — necessário quando a
+    tarja é uma CAIXA no meio da cena (formato sem barra preta original); na
+    barra de ponta a ponta as laterais caem fora da tela e não são desenhadas.
+
+    Devolve (largura_total, altura_total) da imagem, ou None se falhar.
     """
     try:
-        total = altura + 2 * fade
-        alpha = np.full(total, 255, dtype=np.float32)
-        if fade > 0:
-            rampa = np.linspace(0, 255, fade, endpoint=False)
-            alpha[:fade] = rampa
-            alpha[-fade:] = rampa[::-1]
-        img = np.zeros((total, largura, 4), dtype=np.uint8)     # RGB preto
-        img[:, :, 3] = alpha[:, None].astype(np.uint8)
+        alt_total = altura + 2 * fade
+        larg_total = largura + (2 * fade if laterais else 0)
+
+        def _rampa(n):
+            """0 na borda de fora → 1 na entrada do miolo."""
+            v = np.ones(n, dtype=np.float32)
+            if fade > 0:
+                r = np.linspace(0, 1, fade, endpoint=False)
+                v[:fade] = r
+                v[-fade:] = r[::-1]
+            return v
+
+        # A intensidade em cada pixel é a menor entre a rampa vertical e a
+        # horizontal: nas quinas as duas se somam e o canto dissolve junto.
+        fy = _rampa(alt_total)[:, None]
+        fx = _rampa(larg_total)[None, :] if laterais else np.ones((1, larg_total),
+                                                                 dtype=np.float32)
+        f = np.minimum(fy, fx)                      # 0 na borda … 1 no miolo
+
+        img = np.zeros((alt_total, larg_total, 4), dtype=np.uint8)
+        # Cor: da marca na borda (f=0) ao preto no miolo (f=1). Elevar f ao
+        # quadrado concentra o preto e deixa a cor viver só na beirada.
+        for c in range(3):
+            img[:, :, c] = (COR_MARCA_RGB[c] * (1.0 - f ** 2)).astype(np.uint8)
+        # Opacidade: sobe junto com a rampa, então a beirada colorida dissolve.
+        img[:, :, 3] = (255 * f).astype(np.uint8)
         Image.fromarray(img, mode="RGBA").save(destino)
-        return total
+        return larg_total, alt_total
     except Exception as e:
         print(f"⚠️  não deu para gerar a tarja ({e}); usando blur.")
         return None
@@ -1069,29 +1104,46 @@ def processar_video_whisper_nativo(video_path):
         # blur pelo ASS, então não precisa (nem deve) inflar a caixa — inflar era
         # o que gerava aquele retângulo cinza gigante sobre a cena.
         blur_boxes = []
-        tarja = None        # (y, altura_total_do_png) quando cobrimos com tarja
+        tarja = None        # (x, y) do canto do PNG da tarja, já espelhado
         if leg.get("tem_legenda"):
             bx = int(leg["x0"] * W); bx1 = int(leg["x1"] * W)
             by = int(leg["y0"] * H); by1 = int(leg["y1"] * H)
-            if leg.get("faixa_total"):
-                # VÍDEO DIVIDIDO (cena em cima, imagem embaixo, tarja preta no
-                # meio): em vez de borrar, desenhamos uma TARJA PRETA por cima —
-                # o fundo ali já é preto, então some com o texto sem deixar
-                # borrão. Fade suave nas bordas para não cortar reto na cena.
+            # Os DOIS formatos são cobertos com TARJA PRETA, e não com blur: o
+            # blur deixava um borrão que ainda insinuava o texto e chamava mais
+            # atenção que o preto. O que muda entre eles é a forma —
+            barra_inteira = bool(leg.get("faixa_total"))
+            if barra_inteira:
+                # tarja original de ponta a ponta → cobrimos de ponta a ponta,
+                # sem borda lateral (ela cairia fora da tela).
                 bx = 0; bx1 = W
-                print("   ↔️ Tarja original de ponta a ponta → cobre com TARJA "
-                      "PRETA (altura exata + fade nas bordas).")
+                print("   ↔️ Tarja original de ponta a ponta → TARJA PRETA "
+                      "de ponta a ponta.")
             else:
-                # Texto solto sobre a cena: uma margem pequena ajuda a cobrir
-                # contorno/sombra das letras.
+                # texto solto sobre a cena → CAIXA do tamanho já medido para o
+                # blur, com borda dissolvendo também nas laterais.
                 m = int(0.008 * W)
                 bx = max(0, bx - m); bx1 = min(W, bx1 + m)
                 by = max(0, by - int(0.004 * H)); by1 = min(H, by1 + int(0.004 * H))
+                print("   ▪️ Legenda solta sobre a cena → TARJA PRETA em caixa "
+                      "(mesmo tamanho que o blur cobria).")
             print(f"   🩹 Faixa da legenda: y {by/H:.3f}→{by1/H:.3f} "
                   f"({(by1-by)/H*100:.1f}% da altura), x {bx/W:.3f}→{bx1/W:.3f}")
-            fade = max(1, int(TARJA_FADE * H)) if leg.get("faixa_total") else 0
-            if fade and _gerar_tarja_png(W, by1 - by, fade, tarja_path):
-                tarja = (max(0, by - fade), (by1 - by) + 2 * fade)
+            # Caixa alta demais → o retângulo preto atrapalharia a cena; o blur
+            # cobre o mesmo sem pintar um bloco grande. Nunca deixa de cobrir.
+            caixa_grande = (not barra_inteira and (by1 - by) / H > TETO_CAIXA)
+            if caixa_grande:
+                print(f"   ⚠️  caixa de {(by1-by)/H*100:.1f}% passa do teto de "
+                      f"{TETO_CAIXA*100:.0f}% → cobre com BLUR em vez de tarja.")
+            fade = max(1, int(TARJA_FADE * H))
+            png = None if caixa_grande else _gerar_tarja_png(
+                bx1 - bx, by1 - by, fade, tarja_path, laterais=not barra_inteira)
+            if png:
+                # O PNG é maior que a faixa (o fade sobra para os dois lados),
+                # então o canto sobe/volta `fade`. E como a cobertura entra DEPOIS
+                # do hflip, o X é espelhado igual às caixas de blur.
+                larg_png, _alt_png = png
+                tx = 0 if barra_inteira else W - (bx - fade) - larg_png
+                tarja = (max(0, tx), max(0, by - fade))
             else:
                 blur_boxes.append((bx, by, max(1, bx1 - bx), max(1, by1 - by)))
         if meme:
@@ -1106,7 +1158,8 @@ def processar_video_whisper_nativo(video_path):
 
         # ATENÇÃO: as caixas foram medidas no vídeo ORIGINAL, mas a cobertura é
         # aplicada DEPOIS do hflip → o X tem que ser espelhado (x → W-x-w),
-        # senão ela cai no lado errado da tela. (A tarja é full-width, não muda.)
+        # senão ela cai no lado errado da tela. (O X da tarja já foi espelhado
+        # acima, quando ela é uma caixa; de ponta a ponta não há o que espelhar.)
         blur_boxes = [(W - x - w, y, w, h) for (x, y, w, h) in blur_boxes]
 
         fps = _fps_video(video_path)
@@ -1147,7 +1200,7 @@ def processar_video_whisper_nativo(video_path):
             partes.append(f"[{prev}a][bl{i}]overlay={x}:{y}[v{i+1}]")
             prev = f"v{i+1}"
         if tarja:
-            partes.append(f"[{prev}][{idx_tarja}:v]overlay=0:{tarja[0]}[vt]")
+            partes.append(f"[{prev}][{idx_tarja}:v]overlay={tarja[0]}:{tarja[1]}[vt]")
             prev = "vt"
         # fontsdir: a Anton vive no repo, não instalada no sistema
         partes.append(f"[{prev}]ass={ass_basename}:fontsdir={DIR_FONTES}[corpo]")
