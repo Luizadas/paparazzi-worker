@@ -272,6 +272,55 @@ def reivindicar_proxima_edicao(auto=False):
         return None
 
 
+def canais_monitorados():
+    """IDs de canal do YouTube cadastrados no painel — é o banco que manda quais
+    canais o detector varre, não uma constante no código."""
+    if not _setup_django():
+        return []
+    try:
+        from core.models import Canal
+        return [c.youtube_id for c in Canal.objects.all() if c.youtube_id]
+    except Exception as e:
+        print(f"⚠️  db_bridge.canais_monitorados: {e}")
+        return []
+
+
+def retomar_travados(quem="editor"):
+    """
+    Devolve à fila o trabalho que ficou preso num estado TRANSITÓRIO por uma
+    parada não-graciosa (queda de energia, kill -9, reboot). É chamada na PARTIDA
+    de cada serviço, quando por definição não há nada em andamento.
+
+    Sem isso, um vídeo interrompido em 'processando' — e um post interrompido em
+    'postando' — não voltavam a ser pegos por ninguém: ficavam parados para
+    sempre e sumiam da fila sem nunca virar arquivo. Era esse o vídeo "perdido"
+    depois de cada queda de energia.
+
+    quem='editor' → vídeos 'processando' voltam a 'fila_edicao'.
+    quem='poster' → posts 'postando' voltam a 'pendente'.
+    Devolve quantos itens foram devolvidos à fila.
+    """
+    if not _setup_django():
+        return 0
+    try:
+        from core.models import Video, Post
+        if quem == "poster":
+            n = (Post.objects.filter(status=Post.Status.POSTANDO)
+                 .update(status=Post.Status.PENDENTE))
+            if n:
+                print(f"↩️  {n} post(s) presos em 'postando' devolvidos à fila.")
+        else:
+            n = (Video.objects.filter(status=Video.Status.PROCESSANDO)
+                 .update(status=Video.Status.FILA_EDICAO))
+            if n:
+                print(f"↩️  {n} vídeo(s) presos em 'processando' devolvidos "
+                      f"à fila de edição.")
+        return n
+    except Exception as e:
+        print(f"⚠️  db_bridge.retomar_travados: {e}")
+        return 0
+
+
 def marcar_edicao_falhou(video_id):
     if not _setup_django():
         return

@@ -98,6 +98,10 @@ class Post(models.Model):
         POSTANDO = "postando", "Postando"
         PUBLICADO = "publicado", "Publicado"
         FALHOU = "falhou", "Falhou"
+        # Tirado da fila pelo painel. É um status INERTE: o poster só reivindica
+        # 'pendente', então o post fica parado sem ser apagado — e a legenda
+        # editada continua guardada nele para quando voltar para a fila.
+        CANCELADO = "cancelado", "Cancelado"
 
     video = models.ForeignKey(Video, on_delete=models.CASCADE, related_name="posts")
     plataforma = models.CharField(max_length=20, choices=Plataforma.choices,

@@ -118,6 +118,28 @@ def verificar_performance_shorts(deve_parar=lambda: False):
     print("Verificação da Watch List de Shorts concluída.")
 
 
+def detectar_novos_shorts():
+    """
+    Varre os canais cadastrados atrás de Shorts NOVOS e os põe na watch list.
+    É a etapa que enche a lista que `verificar_performance_shorts` consome —
+    sem ela o watcher roda em vazio para sempre.
+
+    Roda dentro do ciclo do watcher (e não num timer próprio) para começar no
+    instante em que você liga o watcher e parar quando você desliga.
+    """
+    import detector
+    canais = db_bridge.canais_monitorados()
+    if not canais:
+        print("ℹ️  Nenhum canal cadastrado no painel — nada a detectar.")
+        return
+    detector.configurar_banco(DB_FILE)
+    for canal in canais:
+        try:
+            detector.verificar_canal_com_api(canal)
+        except Exception as e:
+            print(f"⚠️  detecção falhou no canal {canal}: {e}")
+
+
 def rodar_daemon(intervalo=300, deve_parar=lambda: False):
     """Loop contínuo do watcher (usado como serviço systemd). A cada ciclo faz uma
     passada; entre ciclos dorme `intervalo` s, checando `deve_parar` em pequenos
@@ -126,7 +148,8 @@ def rodar_daemon(intervalo=300, deve_parar=lambda: False):
     print(f"👀 Watcher em modo daemon (intervalo {intervalo}s). Ctrl+C/stop para sair.")
     while not deve_parar():
         try:
-            verificar_performance_shorts(deve_parar)
+            detectar_novos_shorts()          # 1) acha Shorts novos do canal
+            verificar_performance_shorts(deve_parar)   # 2) checa quem viralizou
         except Exception as e:
             print(f"Erro no ciclo do watcher: {e}")
         for _ in range(int(intervalo)):

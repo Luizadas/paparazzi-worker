@@ -12,6 +12,7 @@ import os
 import sys
 import shutil
 import subprocess
+import time
 import importlib.util
 from pathlib import Path
 
@@ -212,6 +213,76 @@ def _rodar(pasta, *args):
         print("\n⏹️  Interrompido pelo usuário.")
 
 
+def _controlador_sistema():
+    """Carrega o SistemaController do painel (mesmo código dos botões do front —
+    o desligamento aqui tem que se comportar igual ao de lá)."""
+    import django
+    sys.path.insert(0, str(PAINEL_DIR))
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "painel.settings")
+    django.setup()
+    from core.services import SistemaController
+    return SistemaController()
+
+
+def desligar_sistema(espera=180):
+    """
+    Desliga TUDO: watcher, editor e poster (graciosamente — cada um termina o
+    vídeo/post em andamento antes de sair), depois o Ollama e o painel.
+
+    O desligamento dos serviços é NÃO-BLOQUEANTE lá no controller, então aqui
+    esperamos a drenagem de verdade e mostramos o andamento: sair antes de todos
+    caírem daria a impressão errada de que já está tudo parado.
+    """
+    try:
+        sc = _controlador_sistema()
+    except Exception as e:
+        print(f"❌ Não consegui falar com o painel/banco ({e}).")
+        print("   Alternativa: sudo systemctl stop paparazzi-watcher "
+              "paparazzi-editor paparazzi-poster")
+        return
+
+    st = sc.status()
+    ligados = [n for n in ("watcher", "editor", "poster") if st[n]["ligado"]]
+    print("\n--- DESLIGAR TODO O SISTEMA ---")
+    print(f"Ligados agora: {', '.join(ligados) if ligados else 'nenhum'}"
+          f" | Ollama: {'ligado' if st['ollama_ligado'] else 'desligado'}")
+    if ligados:
+        print("Cada um termina o item em andamento antes de sair "
+              "(vídeo em edição / post em envio NÃO são abortados).")
+    if input("Confirma o desligamento? [s/N]: ").strip().lower() not in ("s", "sim"):
+        print("Cancelado — nada foi desligado.")
+        return
+
+    sc.desligar_tudo()
+    print("⏳ Pedido de parada enviado. Aguardando a drenagem…")
+    for seg in range(espera):
+        st = sc.status()
+        faltam = [n for n in ("watcher", "editor", "poster") if st[n]["ligado"]]
+        if not faltam:
+            break
+        if seg % 10 == 0:
+            print(f"   ainda terminando: {', '.join(faltam)} ({seg}s)")
+        time.sleep(1)
+    else:
+        st = sc.status()
+        faltam = [n for n in ("watcher", "editor", "poster") if st[n]["ligado"]]
+        print(f"⚠️  Depois de {espera}s ainda há serviço no ar: {', '.join(faltam)}.")
+        print("   Deve ser um item longo terminando. Rode a opção de novo, ou force com:")
+        print("   sudo systemctl stop " + " ".join(f"paparazzi-{n}" for n in faltam))
+        return
+
+    print("✅ Watcher, editor e poster parados.")
+    try:
+        if sc.llm.esta_ligado():
+            sc.llm.desligar()          # só cai se ninguém mais estiver segurando
+            print("✅ Ollama liberado.")
+    except Exception as e:
+        print(f"⚠️  Não deu para desligar o Ollama ({e}) — siga sem ele.")
+
+    parar_painel()
+    print("✅ Painel encerrado. Sistema totalmente desligado.")
+
+
 def iniciar_paparazzi():
     subir_dependencias()
     _rodar("sistema_paparazzi")
@@ -261,6 +332,7 @@ def menu():
 3. Atualizar TikTok session_id
 4. Verificar/instalar dependências
 5. Subir painel de controle (front) — sem ativar nada
+6. DESLIGAR todo o sistema (watcher, editor, poster, Ollama e painel)
 0. Sair
 """)
         op = input("Escolha uma opção: ").strip()
@@ -276,6 +348,8 @@ def menu():
             subir_painel()
             print("\nℹ️  Painel no ar. Watcher/poster continuam DESLIGADOS — "
                   "ligue-os pelo painel quando quiser.")
+        elif op == "6":
+            desligar_sistema()
         elif op == "0":
             print("Até mais! 👋")
             break

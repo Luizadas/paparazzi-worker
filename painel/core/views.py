@@ -154,6 +154,68 @@ def editar_video(request, video_id):
     return redirect("edicoes")
 
 
+# ── Fila de EDIÇÃO (botões da aba Edit) ──────────────────────────────────────
+#
+# Mesma ideia da aba Poster, um nível antes: 'detectado' é candidato, 'fila_edicao'
+# é o que você mandou editar, 'processando' é o que o editor já pegou — e esse
+# último é intocável, o vídeo está sendo baixado/renderizado neste instante.
+
+def _enfileirar_edicao(video):
+    """Manda o vídeo para a fila de edição. Retorna (ok, motivo)."""
+    n = (Video.objects.filter(id=video.id, status=Video.Status.DETECTADO)
+         .update(status=Video.Status.FILA_EDICAO))
+    if n:
+        return True, "na fila de edição"
+    if video.status == Video.Status.FILA_EDICAO:
+        return False, "já estava na fila"
+    if video.status == Video.Status.PROCESSANDO:
+        return False, "já está sendo editado"
+    return False, f"não é candidato (status {video.get_status_display()})"
+
+
+def _cancelar_edicao(video):
+    """Tira o vídeo da fila de edição, voltando a candidato. Retorna (ok, motivo)."""
+    n = (Video.objects.filter(id=video.id, status=Video.Status.FILA_EDICAO)
+         .update(status=Video.Status.DETECTADO))
+    if n:
+        return True, "fora da fila (voltou a candidato)"
+    if video.status == Video.Status.PROCESSANDO:
+        return False, "já está sendo editado — não dá para cancelar"
+    return False, "não estava na fila"
+
+
+@require_POST
+def edicao_cancelar(request, video_id):
+    v = get_object_or_404(Video, id=video_id)
+    ok, motivo = _cancelar_edicao(v)
+    (messages.success if ok else messages.error)(request, f"{v.video_id}: {motivo}.")
+    return redirect("edicoes")
+
+
+@require_POST
+def edicoes_lote(request):
+    """'Editar selecionados' / 'Cancelar selecionados' da aba Edit."""
+    acao = request.POST.get("acao")
+    ids = request.POST.getlist("ids")
+    if acao not in ("editar", "cancelar") or not ids:
+        messages.error(request, "Nada selecionado.")
+        return redirect("edicoes")
+    aplicar = _enfileirar_edicao if acao == "editar" else _cancelar_edicao
+    feitos, pulados = 0, []
+    for v in Video.objects.filter(id__in=ids):
+        ok, motivo = aplicar(v)
+        if ok:
+            feitos += 1
+        else:
+            pulados.append(f"{v.video_id} ({motivo})")
+    verbo = "na fila de edição" if acao == "editar" else "cancelado(s)"
+    if feitos:
+        messages.success(request, f"{feitos} vídeo(s) {verbo}.")
+    if pulados:
+        messages.error(request, "Sem efeito em: " + "; ".join(pulados) + ".")
+    return redirect("edicoes")
+
+
 @require_POST
 def sistema_ligar(request):
     SistemaController().ligar_tudo()
@@ -224,6 +286,10 @@ def videos_lista(request):
                 editado_em = datetime.fromtimestamp(os.path.getmtime(v.arquivo_local))
             except OSError:
                 pass
+        # Estado da FILA (o que o botão da linha oferece). 'postando' não é
+        # nenhum dos dois: o poster já está enviando aquele arquivo.
+        na_fila = any(p.status == Post.Status.PENDENTE for p in v.posts.all())
+        postando = any(p.status == Post.Status.POSTANDO for p in v.posts.all())
         rows.append({
             "v": v,
             "caption": post.caption if post else "",
@@ -231,6 +297,10 @@ def videos_lista(request):
             "disponivel": disponivel,
             "editado_em": editado_em,
             "tem_transcricao": bool(v.transcricao),
+            "na_fila": na_fila,
+            "postando": postando,
+            "pode_postar": disponivel and not na_fila and not postando,
+            "pode_cancelar": na_fila and not postando,
         })
     # Mais recém-editados primeiro (sem arquivo vai para o fim).
     rows.sort(key=lambda r: (r["editado_em"] is not None,
@@ -240,6 +310,99 @@ def videos_lista(request):
     # trabalhando (a lista muda a cada vídeo que fica pronto), lento quando não.
     return render(request, "core/videos.html",
                   {"rows": rows, "status": SistemaController().status()})
+
+
+# ── Fila de postagem (botões da aba Vídeos) ──────────────────────────────────
+#
+# Regras, uma só vez, para o botão da linha e para a ação em lote:
+#   • só entra na fila vídeo com ARQUIVO disponível;
+#   • já em 'pendente' → nada a fazer (não duplica);
+#   • em 'postando' → intocável: o poster já está enviando aquele arquivo;
+#   • cancelar = 'pendente' vira 'cancelado' (não apaga o post, preserva a
+#     legenda); voltar para a fila reaproveita esse mesmo post.
+
+_ATIVOS = [Post.Status.PENDENTE, Post.Status.POSTANDO]
+
+
+def _enfileirar_video(video):
+    """Põe o vídeo na fila do poster. Retorna (ok, motivo)."""
+    if not _arquivo_disponivel(video):
+        return False, "sem arquivo (expirado ou ainda não editado)"
+    if video.posts.filter(status=Post.Status.POSTANDO).exists():
+        return False, "já está sendo postado"
+    if video.posts.filter(status=Post.Status.PENDENTE).exists():
+        return False, "já estava na fila"
+    # Reaproveita o último post cancelado/falhou (mantém a legenda já ajustada);
+    # senão cria um novo herdando a legenda do post mais recente.
+    post = (video.posts.filter(status__in=[Post.Status.CANCELADO, Post.Status.FALHOU])
+            .order_by("-criado_em").first())
+    if post:
+        post.status = Post.Status.PENDENTE
+        post.erro = ""
+        post.save(update_fields=["status", "erro", "atualizado_em"])
+    else:
+        anterior = _post_do_video(video)
+        Post.objects.create(
+            video=video,
+            caption=anterior.caption if anterior else "",
+            privacidade=PosterController().privacidade(),
+        )
+    return True, "na fila"
+
+
+def _cancelar_video(video):
+    """Tira o vídeo da fila do poster. Retorna (ok, motivo)."""
+    if video.posts.filter(status=Post.Status.POSTANDO).exists():
+        return False, "já está sendo postado — não dá para cancelar"
+    post = video.posts.filter(status=Post.Status.PENDENTE).order_by("-criado_em").first()
+    if not post:
+        return False, "não estava na fila"
+    post.status = Post.Status.CANCELADO
+    post.save(update_fields=["status", "atualizado_em"])
+    return True, "fora da fila"
+
+
+@require_POST
+def post_enfileirar(request, video_id):
+    v = get_object_or_404(Video, id=video_id)
+    ok, motivo = _enfileirar_video(v)
+    (messages.success if ok else messages.error)(
+        request, f"{v.video_id}: {motivo}.")
+    return redirect("videos")
+
+
+@require_POST
+def post_cancelar(request, video_id):
+    v = get_object_or_404(Video, id=video_id)
+    ok, motivo = _cancelar_video(v)
+    (messages.success if ok else messages.error)(
+        request, f"{v.video_id}: {motivo}.")
+    return redirect("videos")
+
+
+@require_POST
+def posts_lote(request):
+    """'Postar selecionados' / 'Cancelar selecionados'. Aplica a mesma regra da
+    linha a cada vídeo e resume o resultado — quem não pôde, e por quê."""
+    acao = request.POST.get("acao")
+    ids = request.POST.getlist("ids")
+    if acao not in ("postar", "cancelar") or not ids:
+        messages.error(request, "Nada selecionado.")
+        return redirect("videos")
+    aplicar = _enfileirar_video if acao == "postar" else _cancelar_video
+    feitos, pulados = 0, []
+    for v in Video.objects.filter(id__in=ids).prefetch_related("posts"):
+        ok, motivo = aplicar(v)
+        if ok:
+            feitos += 1
+        else:
+            pulados.append(f"{v.video_id} ({motivo})")
+    verbo = "enfileirado(s)" if acao == "postar" else "cancelado(s)"
+    if feitos:
+        messages.success(request, f"{feitos} vídeo(s) {verbo}.")
+    if pulados:
+        messages.error(request, "Sem efeito em: " + "; ".join(pulados) + ".")
+    return redirect("videos")
 
 
 def video_ver(request, video_id):

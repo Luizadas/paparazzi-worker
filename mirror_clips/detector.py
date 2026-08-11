@@ -79,6 +79,22 @@ def marcar_como_processado(db_path, video_id, published_at):
 
 # --- Lógica Principal ---
 
+_CACHE_UPLOADS = {}
+
+
+def _playlist_de_uploads(youtube, channel_id):
+    """ID da playlist de uploads do canal. Consultado uma vez por processo (1
+    unidade de cota) e guardado — não muda."""
+    if channel_id not in _CACHE_UPLOADS:
+        resp = youtube.channels().list(part="contentDetails", id=channel_id).execute()
+        itens = resp.get("items", [])
+        if not itens:
+            raise RuntimeError(f"canal {channel_id} não encontrado na API")
+        _CACHE_UPLOADS[channel_id] = (
+            itens[0]["contentDetails"]["relatedPlaylists"]["uploads"])
+    return _CACHE_UPLOADS[channel_id]
+
+
 def verificar_canal_com_api(channel_id):
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando verificação de Shorts com API...")
     
@@ -87,11 +103,17 @@ def verificar_canal_com_api(channel_id):
 
     try:
         youtube = build('youtube', 'v3', developerKey=API_KEY)
-        # Busca os 50 vídeos mais recentes
-        search_response = youtube.search().list(
-            channelId=channel_id, part='id', maxResults=50, order='date', type='video'
+        # Os 50 mais recentes pela playlist de UPLOADS do canal, e não por
+        # search.list: dá a mesma lista, mas custa 1 unidade de cota em vez de
+        # 100. Rodando de 5 em 5 min seriam 28.800 unidades/dia com search
+        # (a cota padrão é 10.000 — cegava o detector depois de ~8h por dia);
+        # por aqui são 288.
+        playlist_uploads = _playlist_de_uploads(youtube, channel_id)
+        resp = youtube.playlistItems().list(
+            playlistId=playlist_uploads, part='contentDetails', maxResults=50
         ).execute()
-        video_ids_api = [item['id']['videoId'] for item in search_response.get('items', [])]
+        video_ids_api = [item['contentDetails']['videoId']
+                         for item in resp.get('items', [])]
     except Exception as e:
         print(f"ERRO na busca por shorts: {e}")
         return

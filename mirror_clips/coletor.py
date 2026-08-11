@@ -19,12 +19,22 @@ load_dotenv(find_dotenv())
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from comum.versao import SISTEMA_VERSAO, registrar_processamento
 
-# Integração com módulo de postagem
+# Integração com módulo de postagem. Aceita as DUAS formas de importar o coletor:
+# como módulo solto (o editor põe mirror_clips/ no path e faz 'import coletor') e
+# como pacote ('from mirror_clips.coletor import ...'). Sem o segundo caminho o
+# vídeo saía pronto e NUNCA era enfileirado — e como a retenção olha o último
+# post, o arquivo novo de um vídeo já publicado antes era apagado na varredura
+# seguinte (aconteceu 10/08 20:00 com 2zBrPQt5rSo e Z11yJsFuLHM).
 try:
     from poster import adicionar_na_fila
     POSTER_DISPONIVEL = True
 except ImportError:
-    POSTER_DISPONIVEL = False
+    try:
+        from mirror_clips.poster import adicionar_na_fila
+        POSTER_DISPONIVEL = True
+    except ImportError as e:
+        POSTER_DISPONIVEL = False
+        print(f"⚠️  poster indisponível ({e}) — os vídeos NÃO serão enfileirados.")
 
 DOWNLOAD_DIR = "/mnt/paparazzi/mirror_clips"
 
@@ -428,6 +438,7 @@ def _medir_faixa(A, y0f, y1f):
     ytop, ybase = bloco
     if ybase - ytop < 3:
         return None
+    nuc0, nuc1 = ytop, ybase      # NÚCLEO do texto (limiar forte), sem inflar
     # estende pelo limiar FRACO (mesma tolerância de vão: uma única linha fraca no
     # meio de duas linhas de legenda não pode travar o crescimento)
     debil = np.zeros(H, dtype=bool)
@@ -449,25 +460,34 @@ def _medir_faixa(A, y0f, y1f):
     #    achou. A tarja costuma ter mais de um elemento (título fixo em cima,
     #    karaokê embaixo) e cobrir só um deixa o outro à mostra.
     #
-    #    Como achar a tarja inteira sem invadir a cena: pegamos o bloco contíguo
-    #    de linhas ESCURAS que contém o texto (linha com texto continua escura —
-    #    as letras ocupam pouca largura) e o aparamos até a última linha LISA de
-    #    cada lado. Cena escura não tem linha lisa, então o corte cai na borda
-    #    real da tarja — era esse aparo que faltava.
+    #    Como achar a tarja inteira sem invadir a cena: do NÚCLEO do texto (limiar
+    #    forte, que não infla) crescemos pelo bloco contíguo de linhas ESCURAS —
+    #    linha com texto continua escura, as letras ocupam pouca largura — e
+    #    aparamos até a última linha LISA de cada lado. Cena escura não tem linha
+    #    lisa, então o corte cai na borda real da tarja.
+    #
+    #    O bloco escuro é semeado no NÚCLEO, e não na faixa já estendida pelo
+    #    limiar fraco: essa estende para fora da tarja quando a cena tem textura
+    #    (medido no 0U3hvXFBzK8 — a barra acaba em 0.5398 e a faixa ia a 0.6328,
+    #    onde dark=0.03; era tarja preta pintada sobre a cena).
     escura = prof["dark"] >= 0.7
     teto_barra = max(6, int(0.30 * H))
-    b0, b1 = ytop, ybase
-    while b0 - 1 >= 0 and escura[b0 - 1] and (ybase - b0) < teto_barra:
+    b0, b1 = nuc0, nuc1
+    while b0 - 1 >= 0 and escura[b0 - 1] and (nuc1 - b0) < teto_barra:
         b0 -= 1
-    while b1 + 1 < H and escura[b1 + 1] and (b1 - ytop) < teto_barra:
+    while b1 + 1 < H and escura[b1 + 1] and (b1 - nuc0) < teto_barra:
         b1 += 1
     lisas = np.where(barra[b0:b1 + 1])[0]
     if lisas.size:
-        ytop = min(ytop, b0 + int(lisas[0]))
-        ybase = max(ybase, b0 + int(lisas[-1]))
-    cresceu = (txt0 - ytop) + (ybase - txt1)
+        # A faixa é a TARJA (extensão lisa) unida ao texto, e nunca passa do
+        # bloco escuro — fora dele já é cena.
+        ytop = max(b0, min(nuc0, b0 + int(lisas[0])))
+        ybase = min(b1, max(nuc1, b0 + int(lisas[-1])))
+    cresceu = (nuc0 - ytop) + (ybase - nuc1)
     faixa_total = cresceu >= max(3, int(0.004 * H)) and \
                   float(np.median(prof["dark"][ytop:ybase + 1])) >= 0.6
+    if not faixa_total:               # sem tarja: vale a faixa do texto medido
+        ytop, ybase = txt0, txt1
 
     # 4) Extensão horizontal real do texto (colunas com borda dentro da faixa).
     #    Percentil alto entre frames: cada frase ocupa colunas diferentes, então a

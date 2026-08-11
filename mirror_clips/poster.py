@@ -763,6 +763,14 @@ def modo_daemon(modo: str = "auto", deve_parar=lambda: False):
     libera quando a fila fica ociosa, para o Ollama poder ser encerrado.
     """
     log("📮 Poster em modo DAEMON — postando a fila (fica vivo aguardando novos).")
+    # Post interrompido no meio (queda de energia, kill -9) fica preso em
+    # 'postando' e ninguém mais o reivindica. Na partida não há post em
+    # andamento, então tudo nesse estado volta para 'pendente'.
+    try:
+        from comum import db_bridge
+        db_bridge.retomar_travados("poster")
+    except Exception as e:
+        log(f"⚠️  não deu para retomar posts travados: {e}")
     segurando_llm = False
 
     def _adquirir():

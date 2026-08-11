@@ -19,12 +19,54 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from comum import db_bridge
 
 
+def _limpar_restos(idade_min=30):
+    """
+    Apaga os arquivos intermediários que uma edição interrompida deixa para trás
+    (.part do yt-dlp, _audio.wav, .ass e o mp4 baixado antes de virar _final).
+    Sem isso cada queda deixava dezenas de MB órfãos na pasta.
+
+    Só toca no que tem mais de `idade_min` minutos: assim nunca apaga o material
+    de uma edição em andamento (a partida do serviço não pode atropelar outra
+    instância que ainda esteja fechando o vídeo).
+    """
+    import os, time
+    pasta = os.getenv("MIRROR_OUTPUT_DIR", "/mnt/paparazzi/mirror_clips")
+    corte = time.time() - idade_min * 60
+    n = tot = 0
+    try:
+        for nome in os.listdir(pasta):
+            if nome.endswith("_final.mp4"):
+                continue                       # o produto final nunca é resto
+            if not nome.endswith((".part", "_audio.wav", ".ass", ".mp4", ".jpg", ".png")):
+                continue
+            caminho = os.path.join(pasta, nome)
+            try:
+                if os.path.getmtime(caminho) < corte:
+                    tot += os.path.getsize(caminho)
+                    os.remove(caminho)
+                    n += 1
+            except OSError:
+                pass
+    except OSError as e:
+        print(f"⚠️  limpeza de restos ignorada ({e}).")
+        return
+    if n:
+        print(f"🧹 {n} arquivo(s) intermediário(s) de edições interrompidas "
+              f"removidos ({tot/1e6:.0f} MB).")
+
+
 def modo_daemon(deve_parar=lambda: False):
     """Fica vivo consumindo a fila de edição. Parada graciosa: `deve_parar` é
     checado ENTRE vídeos — o vídeo em edição termina normalmente (não é abortado)."""
     import coletor   # importa aqui (evita carregar modelos se o serviço não editar nada)
 
     print("✂️  Editor em modo DAEMON — processando a fila de edição.")
+    # Partida = não há nada em andamento por definição. Então tudo que ficou em
+    # 'processando' é resto de uma parada não-graciosa (queda de energia, kill -9)
+    # e precisa voltar para a fila — senão o vídeo fica preso nesse estado para
+    # sempre e some sem virar arquivo.
+    db_bridge.retomar_travados("editor")
+    _limpar_restos()
     segurando_llm = False
 
     def _adquirir():

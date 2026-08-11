@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="{% if status.editor.ligado or status.editor.desligando %}8{% else %}30{% endif %}">
-  <title>Paparazzi — Edições</title>
+  {# o auto-refresh vive no JS lá embaixo: precisa respeitar a seleção em curso #}
+  <title>Paparazzi — Edit</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, sans-serif; margin: 0; background:#0f1115; color:#e6e6e6; }
@@ -28,6 +28,15 @@
     a.nome:hover { text-decoration:underline; }
     .muted { color:#9aa4b2; font-size:12px; }
     .msg { padding:10px 14px; border-radius:8px; margin-bottom:10px; background:#1f2937; }
+    input[type=checkbox] { width:16px; height:16px; cursor:pointer; accent-color:#2563eb; }
+    /* Barra de ações em lote: só aparece com algo selecionado (igual à aba Poster). */
+    #barra-lote { position:fixed; left:0; right:0; bottom:0; display:none;
+                  gap:12px; align-items:center; justify-content:center; padding:12px;
+                  background:#161a22; border-top:1px solid #262b36; z-index:20;
+                  box-shadow:0 -6px 20px rgba(0,0,0,.35); }
+    #barra-lote.on { display:flex; }
+    #barra-lote .b-limpar { background:#374151; color:#fff; }
+    main { padding-bottom:80px; }   /* espaço para a barra não cobrir a última linha */
   </style>
 </head>
 <body>
@@ -35,8 +44,8 @@
   <h1>🎬 Paparazzi</h1>
   <nav>
     <a href="{% url 'dashboard' %}">Controle</a>
-    <a href="{% url 'edicoes' %}" class="ativo">Edições</a>
-    <a href="{% url 'videos' %}">Vídeos</a>
+    <a href="{% url 'edicoes' %}" class="ativo">Edit</a>
+    <a href="{% url 'videos' %}">Poster</a>
   </nav>
 </header>
 
@@ -83,10 +92,20 @@
   <div class="card">
     <h3>Candidatos à edição</h3>
     <table>
-      <tr><th>Nome (legenda do post original — abre a fonte)</th><th>Canal</th>
+      <tr><th style="width:34px"><input type="checkbox" id="marcar-todos"
+                                        onclick="marcarTodos(this)"
+                                        title="Selecionar todos"></th>
+          <th>Nome (legenda do post original — abre a fonte)</th><th>Canal</th>
           <th>Postado no canal</th><th>Views</th><th>Status</th><th></th></tr>
       {% for v in candidatos %}
       <tr>
+        <td>
+          {# a barra de lote lê estes dois para saber o que oferecer #}
+          <input type="checkbox" class="sel" value="{{ v.id }}"
+                 data-pode-editar="{% if v.status == 'detectado' %}1{% else %}0{% endif %}"
+                 data-pode-cancelar="{% if v.status == 'fila_edicao' %}1{% else %}0{% endif %}"
+                 onchange="atualizarBarra()">
+        </td>
         <td>
           {# Início da legenda/título do post NO CANAL ORIGINAL; o clique vai
              para o vídeo fonte (url_fonte cai no watch?v= quando falta). #}
@@ -107,16 +126,86 @@
         <td>
           {% if v.status == "detectado" %}
             <form method="post" action="{% url 'editar_video' v.id %}">{% csrf_token %}
-              <button class="btn-edit">Editar</button></form>
+              <button class="btn-edit">▶ Editar</button></form>
+          {% elif v.status == "fila_edicao" %}
+            <form method="post" action="{% url 'edicao_cancelar' v.id %}">{% csrf_token %}
+              <button class="btn-off">✕ cancelar</button></form>
           {% endif %}
         </td>
       </tr>
       {% empty %}
-      <tr><td colspan="6" class="muted">Nenhum candidato. Ligue o watcher para
+      <tr><td colspan="7" class="muted">Nenhum candidato. Ligue o watcher para
         detectar virais do canal.</td></tr>
       {% endfor %}
     </table>
   </div>
 </main>
+
+{# Ações em lote. Um form só; a ação e os ids são preenchidos no submit. #}
+<form id="barra-lote" method="post" action="{% url 'edicoes_lote' %}">
+  {% csrf_token %}
+  <input type="hidden" name="acao" id="lote-acao">
+  <span id="lote-resumo" class="muted"></span>
+  <button type="button" class="btn-edit" id="lote-editar"
+          onclick="enviarLote('editar')">▶ Editar selecionados</button>
+  <button type="button" class="btn-off" id="lote-cancelar"
+          onclick="enviarLote('cancelar')">✕ Cancelar selecionados</button>
+  <button type="button" class="b-limpar" onclick="limparSelecao()">limpar seleção</button>
+</form>
+
+<script>
+  const marcados = () => Array.from(document.querySelectorAll('.sel')).filter(c => c.checked);
+
+  function atualizarBarra() {
+    const sel = marcados();
+    document.getElementById('barra-lote').classList.toggle('on', sel.length > 0);
+    const nEditar = sel.filter(c => c.dataset.podeEditar === '1').length;
+    const nCancelar = sel.filter(c => c.dataset.podeCancelar === '1').length;
+    // Cada botão só aparece se houver alguém em quem ele faça efeito — a seleção
+    // pode misturar candidato, item na fila e vídeo já em edição.
+    const be = document.getElementById('lote-editar');
+    const bc = document.getElementById('lote-cancelar');
+    be.style.display = nEditar ? '' : 'none';
+    bc.style.display = nCancelar ? '' : 'none';
+    be.textContent = `▶ Editar selecionados (${nEditar})`;
+    bc.textContent = `✕ Cancelar selecionados (${nCancelar})`;
+    document.getElementById('lote-resumo').textContent =
+      sel.length + ' selecionado(s)' +
+      (nEditar || nCancelar ? '' : ' — nenhum aceita ação (já está sendo editado)');
+  }
+
+  function marcarTodos(cb) {
+    document.querySelectorAll('.sel').forEach(c => c.checked = cb.checked);
+    atualizarBarra();
+  }
+
+  function limparSelecao() {
+    document.querySelectorAll('.sel').forEach(c => c.checked = false);
+    document.getElementById('marcar-todos').checked = false;
+    atualizarBarra();
+  }
+
+  function enviarLote(acao) {
+    const chave = acao === 'editar' ? 'podeEditar' : 'podeCancelar';
+    const alvos = marcados().filter(c => c.dataset[chave] === '1');
+    if (!alvos.length) return;
+    const form = document.getElementById('barra-lote');
+    form.querySelectorAll('input[name="ids"]').forEach(e => e.remove());
+    alvos.forEach(c => {
+      const h = document.createElement('input');
+      h.type = 'hidden'; h.name = 'ids'; h.value = c.value;
+      form.appendChild(h);
+    });
+    document.getElementById('lote-acao').value = acao;
+    form.submit();
+  }
+
+  // Auto-refresh por JS: recarregar no meio de uma seleção jogaria fora o que
+  // você acabou de marcar, então com algo marcado adia para o ciclo seguinte.
+  const INTERVALO = {% if status.editor.ligado or status.editor.desligando %}8000{% else %}30000{% endif %};
+  setInterval(() => { if (!marcados().length) location.reload(); }, INTERVALO);
+
+  atualizarBarra();
+</script>
 </body>
 </html>

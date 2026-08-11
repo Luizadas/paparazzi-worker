@@ -19,12 +19,29 @@ class RetencaoService:
 
     def videos_expirados(self):
         """Consulta a REGRA no banco (função fn_videos_expirados).
-        Retorna lista de dicts: {id, video_id, arquivo_local}."""
+        Retorna lista de dicts: {id, video_id, arquivo_local, postado_em}."""
         with connection.cursor() as cur:
-            cur.execute("SELECT id, video_id, arquivo_local "
+            cur.execute("SELECT id, video_id, arquivo_local, postado_em "
                         "FROM fn_videos_expirados(%s)", [self.horas])
             colunas = [c[0] for c in cur.description]
             return [dict(zip(colunas, linha)) for linha in cur.fetchall()]
+
+    @staticmethod
+    def _mais_novo_que_a_publicacao(caminho, postado_em):
+        """
+        True se o ARQUIVO em disco é posterior à publicação que o expiraria — ou
+        seja, é um arquivo REPROCESSADO depois de postar, e apagá-lo é sempre
+        errado, esteja a regra do banco satisfeita ou não.
+
+        Trava de segurança que não depende do enfileiramento ter acontecido: foi
+        exatamente assim que dois vídeos recém-gerados foram apagados em 10/08.
+        """
+        if not postado_em:
+            return False
+        try:
+            return os.path.getmtime(caminho) > postado_em.timestamp()
+        except OSError:
+            return False
 
     def _marcar_removido(self, video_pk):
         with connection.cursor() as cur:
@@ -36,6 +53,9 @@ class RetencaoService:
         for row in self.videos_expirados():
             caminho = row["arquivo_local"]
             existe = bool(caminho) and os.path.exists(caminho)
+            if existe and self._mais_novo_que_a_publicacao(caminho, row.get("postado_em")):
+                resultados.append((row["video_id"], "mantido (mais novo que o post)"))
+                continue
             if dry_run:
                 resultados.append((row["video_id"], "expira" if existe else "sem-arquivo"))
                 continue

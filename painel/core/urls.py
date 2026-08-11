@@ -20,10 +20,16 @@ urlpatterns = [
     # Aba de edições (candidatos)
     path("edicoes", views.edicoes_lista, name="edicoes"),
     path("edicoes/<int:video_id>/editar", views.editar_video, name="editar_video"),
+    path("edicoes/<int:video_id>/cancelar", views.edicao_cancelar, name="edicao_cancelar"),
+    path("edicoes/lote", views.edicoes_lote, name="edicoes_lote"),
     # Aba de vídeos
     path("videos", views.videos_lista, name="videos"),
     path("videos/<int:video_id>/ver", views.video_ver, name="video_ver"),
     path("videos/<int:video_id>/download", views.video_download, name="video_download"),
     path("videos/<int:video_id>/legenda/editar", views.caption_editar, name="caption_editar"),
     path("videos/<int:video_id>/legenda/regerar", views.caption_regerar, name="caption_regerar"),
+    # Fila de postagem a partir da lista de vídeos
+    path("videos/<int:video_id>/postar", views.post_enfileirar, name="post_enfileirar"),
+    path("videos/<int:video_id>/cancelar", views.post_cancelar, name="post_cancelar"),
+    path("videos/lote", views.posts_lote, name="posts_lote"),
 ]
