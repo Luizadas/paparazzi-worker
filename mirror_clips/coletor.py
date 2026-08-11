@@ -85,6 +85,11 @@ TARJA_FADE = float(os.getenv("TARJA_FADE", "0.006"))
 # LIDA pelo OCR quando a legenda está solta sobre a cena, sem tarja atrás.
 TOL_SEM_TARJA = float(os.getenv("TOL_SEM_TARJA", "0.008"))
 
+# Teto da faixa coberta, em fração da altura. Acima disso a medição é considerada
+# perdida e vale a banda lida pelo OCR. Medido: tarjas reais vão de 9,9% a 15,4%;
+# as medições erradas davam 18,1% e 20,1%.
+TETO_FAIXA = float(os.getenv("TETO_FAIXA", "0.17"))
+
 
 def _get_whisper():
     """Carrega o modelo faster-whisper uma vez (CPU, int8)."""
@@ -501,12 +506,20 @@ def _medir_faixa(A, y0f, y1f):
     else:
         x0, x1 = 0.0, 1.0
 
-    # 5) Teto de altura: uma faixa de legenda não passa de ~20% da tela. Se passou,
-    #    a medição saiu do controle → recorta em torno do centro do OCR.
-    if (ybase - ytop) / H > 0.20:
-        centro = (lin_ocr[0] + lin_ocr[1]) // 2
-        meia = int(0.10 * H)
-        ytop = max(0, centro - meia); ybase = min(H - 1, centro + meia)
+    # 5) TETO de altura. As tarjas legítimas medidas até aqui ficam entre 9,9% e
+    #    15,4% da tela; as medições que deram errado davam 18,1% e 20,1% (esta
+    #    última no vídeo de palco, onde o fundo escuro passou por tarja). O teto
+    #    fica acima do maior caso real e abaixo dos errados.
+    #
+    #    Estourou = a medição saiu do controle. Aí voltamos para a banda que o
+    #    OCR LEU, que é evidência de texto de verdade — e não para um recorte de
+    #    ±10% em torno do centro, que só garantia o tamanho e não o LUGAR (foi o
+    #    que produziu a tarja de 20,1% em cima da cena).
+    if (ybase - ytop) / H > TETO_FAIXA:
+        print(f"   ⚠️  faixa medida em {(ybase-ytop)/H*100:.1f}% da altura "
+              f"(teto {TETO_FAIXA*100:.0f}%) → volta para a banda lida pelo OCR.")
+        ytop = max(ytop, lin_ocr[0])
+        ybase = min(ybase, lin_ocr[1])
 
     # Margem só faz sentido quando NÃO há tarja (texto solto sobre a cena): aí
     # uma folga ajuda a pegar contorno/sombra do glifo. Com tarja, margem = 0.
@@ -784,6 +797,14 @@ def detectar_legenda_ocr(video_path, n=N_FRAMES_PIXEL, n_ocr=N_FRAMES_OCR):
                 # Sobre TARJA PRETA a medição manda: ela acha a barra inteira, que
                 # é maior que o texto lido (título fixo + karaokê). Validado em 1.6.1.
                 y0, y1 = med["y0"], med["y1"]
+                # E a NOSSA legenda vai no CENTRO DA BARRA, não onde estava o
+                # texto original: a barra inteira vira preta, então não há o que
+                # imitar ali — o que importa é ficar longe das duas bordas.
+                # No 0U3hvXFBzK8 o texto original ficava embaixo na barra
+                # (cy 0.5844, a 2,2% da borda) e a letra, que tem ±2,4%, vazava
+                # para a cena. No centro sobram 5,4% de cada lado, e a legenda
+                # não tem como cair fora do preto que nós mesmos pintamos.
+                cy = (y0 + y1) / 2
             else:
                 # Texto SOLTO sobre a cena: aqui o crescimento por bordas não vale —
                 # cena tem borda em todo lugar e a faixa estourava para a janela
